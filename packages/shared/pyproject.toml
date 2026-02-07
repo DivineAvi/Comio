@@ -1,0 +1,12 @@
+[project]
+name = "comio-shared"
+version = "0.1.0"
+description = "Comio shared types, utilities, and constants"
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.10.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

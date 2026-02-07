@@ -1,0 +1,56 @@
+# Comio — Local Development Environment
+# Start:  docker compose up -d
+# Stop:   docker compose down
+# Reset:  docker compose down -v  (wipes all data)
+# Logs:   docker compose logs -f postgres
+
+services:
+  # ─── PostgreSQL Database ─────────────────────────────────────
+  # Stores all application data: projects, incidents, users, deployments,
+  # chat history, AI diagnoses, etc.
+  # Uses pgvector extension for storing AI embeddings (needed for RAG search).
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: comio-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: comio
+      POSTGRES_PASSWORD: comio
+      POSTGRES_DB: comio
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U comio"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── Redis ───────────────────────────────────────────────────
+  # In-memory data store used for:
+  # - Caching LLM responses (save money by not re-calling for same queries)
+  # - Rate limiting API requests
+  # - Pub/Sub events (real-time incident notifications, deploy status)
+  # - Storing anomaly detection model state
+  # - Session data
+  redis:
+    image: redis:7-alpine
+    container_name: comio-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+# Named volumes — Docker manages the storage location.
+# Data persists across container restarts.
+# Run `docker compose down -v` to wipe everything and start fresh.
+volumes:
+  postgres_data:
+  redis_data:
