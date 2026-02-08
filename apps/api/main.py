@@ -6,7 +6,9 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from apps.api.config import settings
 from apps.api.exceptions import ComioException, comio_exception_handler
-from apps.api.routes import health
+from apps.api.routes import auth, health, incidents, projects
+from apps.api.middleware import RequestIDMiddleware
+from apps.api.database import engine
 
 logging.basicConfig(
     level=logging.DEBUG if settings.debug else logging.INFO,
@@ -25,8 +27,8 @@ async def lifespan(app: FastAPI):
       \033[38;5;208m  ██║     \033[36m██║   ██║██║╚██╔╝██║██║██║   ██║
       \033[38;5;208m  ╚██████╗\033[36m╚██████╔╝██║ ╚═╝ ██║██║╚██████╔╝
       \033[38;5;208m   ╚═════╝\033[36m ╚═════╝ ╚═╝     ╚═╝╚═╝ ╚═════╝
-    \033[0m\033[90m  Create · Edit · Deploy · Monitor · Fix
-      ─────────────────────────────────────────\033[0m
+      \033[0m\033[90m  Create · Edit · Deploy · Monitor · Fix
+       ─────────────────────────────────────────\033[0m
     """
 
     # --- Startup ---
@@ -38,6 +40,9 @@ async def lifespan(app: FastAPI):
 
     # --- Shutdown ---
     logger.info("Comio API shutting down...")
+
+    await engine.dispose()  # Close all database connections cleanly
+   
     # Future: close DB connections, cleanup resources
 
 def create_app() -> FastAPI:
@@ -54,8 +59,13 @@ def create_app() -> FastAPI:
         description="AI-powered platform to create, edit, deploy, and monitor applications.",
         version=settings.app_version,
         lifespan=lifespan,
+        docs_url="/docs",   # Swagger UI endpoint
+        redoc_url="/redoc", # Swagger UI alternative
     )
 
+    # --- Middleware ---
+    # Order matters: middleware is applied in REVERSE order (last added runs first)
+    # So CORS runs first (outermost), then RequestID (innermost, closest to your code)
     application.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
@@ -63,13 +73,17 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    
+    application.add_middleware(RequestIDMiddleware) # Add request ID middleware to every request
     # --- Exception Handlers ---
     application.add_exception_handler(ComioException, comio_exception_handler)
 
     # --- Routes ---
     application.include_router(health.router, tags=["health"])
-    # Future: incidents, projects, sandbox, chat, deploy routers will be added here
+    application.include_router(auth.router)        # /auth/register, /auth/login, /auth/refresh, /auth/me
+    application.include_router(projects.router)     # /projects/import, /projects/create, etc.
+    application.include_router(incidents.router)    # /incidents, /incidents/{id}, approve/reject
+   
+    # Future: sandbox, chat, deploy routers will be added here
 
     return application
 
