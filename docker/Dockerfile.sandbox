@@ -1,0 +1,62 @@
+# Comio Sandbox — Base image for all project sandboxes
+#
+# This image provides a secure, isolated environment for:
+# - Running project code
+# - Installing dependencies (pip, npm)
+# - Git operations (clone, commit, push)
+# - AI agent tool execution (create files, run commands)
+#
+# Each project gets its own container based on this image.
+
+FROM python:3.12-slim
+
+# ── Install system dependencies ──────────────────────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # Version control
+    git \
+    # Networking tools
+    curl \
+    wget \
+    # Build essentials (needed by some pip packages)
+    build-essential \
+    # File type detection (used by FileOpsService for binary check)
+    file \
+    # Fast code search (used by FileOpsService search)
+    ripgrep \
+    # JSON processor
+    jq \
+    # Node.js 20 (for web projects)
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y nodejs \
+    # Cleanup to reduce image size
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Create non-root user ─────────────────────────────
+# Security: sandbox code runs as 'sandbox' user, not root.
+# This prevents the AI agent from modifying system files.
+RUN useradd -m -s /bin/bash -u 1000 sandbox
+
+# ── Set up workspace ─────────────────────────────────
+# All project files live here. This directory is mounted
+# as a Docker volume for persistence.
+WORKDIR /workspace
+RUN chown sandbox:sandbox /workspace
+
+# ── Configure git ─────────────────────────────────────
+# Set default git config so commits work inside the sandbox
+RUN git config --system user.email "sandbox@comio.dev" \
+    && git config --system user.name "Comio Sandbox" \
+    && git config --system init.defaultBranch main
+
+# ── Switch to non-root user ──────────────────────────
+USER sandbox
+
+# ── Health check ──────────────────────────────────────
+# Docker uses this to verify the container is healthy
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+    CMD [ "python3", "-c", "print('healthy')" ]
+
+# ── Keep container running ────────────────────────────
+# The container stays alive waiting for commands via docker exec
+CMD ["tail", "-f", "/dev/null"]

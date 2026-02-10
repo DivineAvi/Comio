@@ -8,13 +8,14 @@ import uuid
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-
+from logging import getLogger
 from apps.api.auth import get_current_user
 from apps.api.database import get_db
 from apps.api.exceptions import NotFoundException, ForbiddenException
 from apps.api.models.project import Project, ProjectOrigin, ProjectType
 from apps.api.models.user import User
 from apps.api.repositories import project_repo
+from apps.api.services.sandbox_manager import sandbox_manager
 from apps.api.schemas.project import (
     ProjectImport,
     ProjectCreate,
@@ -25,7 +26,7 @@ from apps.api.schemas.project import (
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
-
+logger = getLogger(__name__)
 # ── Helper ────────────────────────────────────────────
 
 def _project_to_response(project: Project) -> ProjectResponse:
@@ -103,8 +104,11 @@ async def import_project(
         owner_id=current_user.id,
     )
 
-    # TODO (Day 5): Trigger sandbox creation
-    # await sandbox_manager.create_sandbox(project)
+    # Clone the repo into a sandbox container
+    try:
+        await sandbox_manager.create_sandbox(db, project)
+    except Exception as e:
+        logger.warning("Sandbox creation failed (will retry later): %s", e)
 
     return _project_to_response(project)
 
@@ -135,8 +139,11 @@ async def create_project(
         owner_id=current_user.id,
     )
 
-    # TODO (Day 5): Trigger blank sandbox creation
-    # await sandbox_manager.create_blank_sandbox(project)
+    # Create a blank sandbox container (AI will scaffold files later)
+    try:
+        await sandbox_manager.create_blank_sandbox(db, project)
+    except Exception as e:
+        logger.warning("Sandbox creation failed (will retry later): %s", e)
 
     return _project_to_response(project)
 

@@ -2,7 +2,7 @@
 
 import uuid
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from apps.api.schemas.base import BaseResponse
 
@@ -21,9 +21,26 @@ class FileWriteRequest(BaseModel):
     content: str
 
 
+class ExecCommandRequest(BaseModel):
+    """Request to execute a command inside a sandbox."""
+    command: str
+    timeout: int = 30
+
+
+class SearchRequest(BaseModel):
+    """Request to search file contents in a sandbox."""
+    query: str = Field(min_length=1, description="Search pattern (supports regex)")
+    glob: str | None = Field(default=None, description="File glob filter, e.g. '*.py'")
+
+
 class GitCommitRequest(BaseModel):
     """Request to commit changes in a sandbox."""
-    message: str
+    message: str = Field(min_length=1)
+
+
+class GitBranchRequest(BaseModel):
+    """Request to create a new git branch."""
+    branch_name: str = Field(min_length=1)
 
 
 class GitPRRequest(BaseModel):
@@ -62,6 +79,13 @@ class FileContent(BaseModel):
     lines: int
 
 
+class SearchResult(BaseModel):
+    """A single search match inside a sandbox."""
+    path: str
+    line_number: int
+    content: str
+
+
 class GitStatus(BaseModel):
     """Git status of a sandbox."""
     branch: str
@@ -69,3 +93,9 @@ class GitStatus(BaseModel):
     staged: list[str] = []
     untracked: list[str] = []
     has_changes: bool = False
+
+
+class GitDiffResponse(BaseModel):
+    """Git diff output."""
+    diff: str
+    has_changes: bool

@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from apps.api.config import settings
 from apps.api.exceptions import ComioException, comio_exception_handler
-from apps.api.routes import auth, health, incidents, projects
+from apps.api.routes import auth, health, incidents, projects, sandbox
 from apps.api.middleware import RequestIDMiddleware
 from apps.api.database import engine
 
@@ -82,7 +82,7 @@ def create_app() -> FastAPI:
     application.include_router(auth.router)        # /auth/register, /auth/login, /auth/refresh, /auth/me
     application.include_router(projects.router)     # /projects/import, /projects/create, etc.
     application.include_router(incidents.router)    # /incidents, /incidents/{id}, approve/reject
-   
+    application.include_router(sandbox.router)    # /projects/{id}/sandbox/*
     # Future: sandbox, chat, deploy routers will be added here
 
     return application
