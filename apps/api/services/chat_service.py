@@ -125,14 +125,21 @@ class ChatService:
         if not sandbox.container_id:
             return [{"type": "error", "content": "Sandbox has no container"}]
 
-        events = await agent.process_message(
-            container_id=sandbox.container_id,
-            conversation_history=conversation_history,
-            user_message=user_message,
-            project_name=project_name,
-            project_description=project_description,
-            project_type=project_type,
-        )
+        try:
+            events = await agent.process_message(
+                container_id=sandbox.container_id,
+                conversation_history=conversation_history,
+                user_message=user_message,
+                project_name=project_name,
+                project_description=project_description,
+                project_type=project_type,
+            )
+        except Exception as e:
+            logger.error("Agent error: %s", e)
+            return [
+                {"type": "error", "content": f"AI agent error: {str(e)}"},
+                {"type": "done", "files_modified": []},
+            ]
 
         # Step 5: Persist the assistant's response
         # Collect the text response and files modified
