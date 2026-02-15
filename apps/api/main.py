@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from apps.api.config import settings
 from apps.api.exceptions import ComioException, comio_exception_handler
-from apps.api.routes import auth, health, incidents, projects, sandbox, chat
+from apps.api.routes import auth, health, incidents, projects, sandbox, chat, webhooks
 from apps.api.middleware import RequestIDMiddleware
 from apps.api.database import engine
 
@@ -34,16 +34,26 @@ async def lifespan(app: FastAPI):
     # --- Startup ---
     print(BANNER)
     logger.info("Comio API v%s starting up...", settings.app_version)
-    # Future: initialize DB connection pool, Redis, Docker client
+    
+    # Initialize event bus
+    from events.bus import create_event_bus
+    from apps.api.services.event_service import event_service
+    
+    event_bus = create_event_bus("redis", redis_url=settings.redis_url)
+    event_service.set_event_bus(event_bus)
+    logger.info("Event bus initialized (Redis)")
 
     yield  # App runs and handles requests here
 
     # --- Shutdown ---
     logger.info("Comio API shutting down...")
-
-    await engine.dispose()  # Close all database connections cleanly
-   
-    # Future: close DB connections, cleanup resources
+    
+    # Close event bus
+    await event_bus.close()
+    await event_service.close()
+    
+    # Close database connections
+    await engine.dispose()
 
 def create_app() -> FastAPI:
     """Application factory pattern.
@@ -84,6 +94,7 @@ def create_app() -> FastAPI:
     application.include_router(incidents.router)    # /incidents, /incidents/{id}, approve/reject
     application.include_router(sandbox.router)    # /projects/{id}/sandbox/*
     application.include_router(chat.router)    # /projects/{id}/sandbox/chat/*
+    application.include_router(webhooks.router)    # /webhooks/alert, /webhooks/test-alert
     # Future: sandbox, chat, deploy routers will be added here
 
     return application

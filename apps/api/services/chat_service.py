@@ -120,6 +120,7 @@ class ChatService:
 
         # Step 3: Create agent with LLM adapter
         agent = self._create_agent()
+        
 
         # Step 4: Run the ReAct loop
         if not sandbox.container_id:
