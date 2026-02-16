@@ -1,0 +1,21 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "comio-demo-app"
+version = "0.1.0"
+description = "Demo e-commerce API for testing Comio monitoring"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.34.0",
+    "pydantic>=2.10.0",
+    "prometheus-client>=0.21.0",  # For /metrics endpoint
+    "opentelemetry-api>=1.28.0",
+    "opentelemetry-sdk>=1.28.0",
+    "opentelemetry-instrumentation-fastapi>=0.49b0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["."]

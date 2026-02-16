@@ -259,6 +259,10 @@ comio/
 │   ├── observability/          # OTel collector configs, dashboards
 │   └── shared/                 # Shared types, utils, constants
 ├── infra/
+│   ├── observability/          # Monitoring and alerting configs
+│   │   ├── prometheus.yml      # Prometheus scrape config
+│   │   ├── alert_rules.yml     # Alerting rules
+│   │   └── alertmanager.yml    # Alert routing config
 │   ├── terraform/              # GCP infrastructure
 │   │   ├── modules/
 │   │   ├── environments/
@@ -697,13 +701,17 @@ class SandboxChatAgent:
   - OpenTelemetry instrumentation (traces, metrics, logs)
   - Prometheus metrics endpoint (`/metrics`)
   - Structured JSON logging
-- Observability stack (all in `docker-compose.yml`):
-  - OpenTelemetry Collector (OTLP receivers -> Prometheus + Loki exporters)
-  - Prometheus (scrape demo-app + API + OTel collector, recording rules for SLIs)
-  - Alertmanager (high error rate / latency spike -> webhook to Comio API)
-  - Loki (log aggregation)
-  - Grafana (provisioned dashboards: app health, Comio system health)
-- Verify end-to-end: demo-app -> OTel -> Prometheus -> Alertmanager -> Comio API
+- Observability stack configuration in `infra/observability/`:
+  - `prometheus.yml`: Scrape configs (demo-app, API, OTel collector), recording rules for SLIs
+  - `alert_rules.yml`: Alert definitions (HighErrorRate, HighLatency, ChaosEngineering)
+  - `alertmanager.yml`: Alert routing to Comio webhook, grouping, deduplication
+- Observability services (added to `docker-compose.yml`):
+  - Prometheus (port 9090) - metrics collection and alerting
+  - Alertmanager (port 9093) - alert routing and notification
+  - OpenTelemetry Collector (optional) - traces and metrics aggregation
+  - Loki (optional) - log aggregation
+  - Grafana (optional) - visualization dashboards
+- Verify end-to-end: demo-app → Prometheus → Alertmanager → Comio webhook → Incident created
 
 ### Day 10: Root Cause Analysis Engine
 

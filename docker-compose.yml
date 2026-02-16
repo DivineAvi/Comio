@@ -48,9 +48,80 @@ services:
       timeout: 5s
       retries: 5
 
+  # ─── Demo Order API ──────────────────────────────────────────
+  # Simulated e-commerce service for testing monitoring/alerting.
+  # Includes chaos endpoints to trigger failures on demand.
+  demo-app:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.demo-app
+    container_name: comio-demo-app
+    restart: unless-stopped
+    ports:
+      - "8001:8000"
+    environment:
+      - LOG_LEVEL=INFO
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    depends_on:
+      - prometheus
+
+  # ─── Prometheus ──────────────────────────────────────────────
+  # Metrics collection and storage. Scrapes /metrics endpoints
+  # from demo-app and Comio API. Evaluates alerting rules.
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: comio-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./infra/observability/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./infra/observability/alert_rules.yml:/etc/prometheus/alert_rules.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  # ─── Alertmanager ────────────────────────────────────────────
+  # Handles alerts from Prometheus. Routes them to webhooks,
+  # Slack, PagerDuty, etc. We configure it to send to Comio API.
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: comio-alertmanager
+    restart: unless-stopped
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./infra/observability/alertmanager.yml:/etc/alertmanager/alertmanager.yml
+      - alertmanager_data:/alertmanager
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9093/-/healthy"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    depends_on:
+      - prometheus
+
 # Named volumes — Docker manages the storage location.
 # Data persists across container restarts.
 # Run `docker compose down -v` to wipe everything and start fresh.
 volumes:
   postgres_data:
   redis_data:
+  prometheus_data:
+  alertmanager_data:

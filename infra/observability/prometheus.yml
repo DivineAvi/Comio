@@ -1,0 +1,36 @@
+# Prometheus configuration for Comio local development
+
+global:
+  scrape_interval: 15s      # Scrape targets every 15s
+  evaluation_interval: 15s   # Evaluate alerting rules every 15s
+  external_labels:
+    cluster: 'local-dev'
+    environment: 'development'
+
+# Alertmanager configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093
+
+# Load alerting rules from files
+rule_files:
+  - '/etc/prometheus/alert_rules.yml'
+
+# Scrape configurations
+scrape_configs:
+  # Demo Order API
+  - job_name: 'demo-app'
+    static_configs:
+      - targets: ['demo-app:8000']
+        labels:
+          service: 'demo-order-api'
+          comio_project_id: '65dd0c1d-4da2-4670-9ecd-2a8c9860e5b1'  # Your test project ID
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+
+  # Prometheus itself (self-monitoring)
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']

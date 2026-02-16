@@ -1,0 +1,49 @@
+# Prometheus alerting rules for Comio demo
+
+groups:
+  - name: demo_app_alerts
+    interval: 15s
+    rules:
+      # Alert when error rate > 10% for 1 minute
+      - alert: HighErrorRate
+        expr: |
+          (
+            rate(http_requests_total{status_code=~"5..", job="demo-app"}[1m])
+            /
+            rate(http_requests_total{job="demo-app"}[1m])
+          ) > 0.1
+        for: 1m
+        labels:
+          severity: critical
+          service: demo-order-api
+          comio_project_id: '65dd0c1d-4da2-4670-9ecd-2a8c9860e5b1'
+        annotations:
+          summary: "High error rate detected in demo-app"
+          description: "Error rate is {{ $value | humanizePercentage }} (threshold: 10%)"
+          
+      # Alert when latency > 2s for 1 minute
+      - alert: HighLatency
+        expr: |
+          histogram_quantile(0.95,
+            rate(http_request_duration_seconds_bucket{job="demo-app"}[1m])
+          ) > 2
+        for: 1m
+        labels:
+          severity: high
+          service: demo-order-api
+          comio_project_id: '65dd0c1d-4da2-4670-9ecd-2a8c9860e5b1'
+        annotations:
+          summary: "High latency detected in demo-app"
+          description: "P95 latency is {{ $value }}s (threshold: 2s)"
+      
+      # Alert when chaos flags are active
+      - alert: ChaosEngineering
+        expr: active_chaos_flags{job="demo-app"} > 0
+        for: 30s
+        labels:
+          severity: medium
+          service: demo-order-api
+          comio_project_id: '65dd0c1d-4da2-4670-9ecd-2a8c9860e5b1'
+        annotations:
+          summary: "Chaos engineering active in demo-app"
+          description: "{{ $value }} chaos flag(s) are currently enabled"

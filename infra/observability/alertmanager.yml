@@ -1,0 +1,28 @@
+# Alertmanager configuration — sends alerts to Comio webhook
+
+global:
+  resolve_timeout: 5m
+
+# Route all alerts to Comio webhook
+route:
+  group_by: ['alertname', 'comio_project_id']
+  group_wait: 10s        # Wait 10s before sending initial notification
+  group_interval: 10s    # Wait 10s before sending updates
+  repeat_interval: 1h    # Resend alert every 1h if still firing
+  receiver: 'comio-webhook'
+
+receivers:
+  - name: 'comio-webhook'
+    webhook_configs:
+      - url: 'http://host.docker.internal:8000/webhooks/alert'
+        send_resolved: true
+        http_config:
+          follow_redirects: true
+
+# Inhibition rules (prevent alert spam)
+inhibit_rules:
+  - source_match:
+      severity: 'critical'
+    target_match:
+      severity: 'high'
+    equal: ['alertname', 'comio_project_id']
