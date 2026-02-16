@@ -7,6 +7,7 @@ that can be triggered via chaos endpoints.
 import logging
 import time
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from enum import Enum
 
@@ -59,12 +60,27 @@ chaos_triggered_total = Counter(
     ["chaos_type"]
 )
 
+# ── Lifespan ──────────────────────────────────────────
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Manages application startup and shutdown lifecycle."""
+    # Startup
+    logger.info("Demo Order API starting up...")
+    logger.info("Chaos endpoints available at /chaos/*")
+    
+    yield  # App runs here
+    
+    # Shutdown
+    logger.info("Demo Order API shutting down...")
+
 # ── Application ───────────────────────────────────────
 
 app = FastAPI(
     title="Demo Order API",
     description="E-commerce order service for Comio monitoring demo",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 
@@ -325,12 +341,3 @@ def get_chaos_status():
         "cpu_spike": chaos.cpu_spike_enabled,
         "memory_ballast_mb": len(chaos.memory_ballast) * 10,
     }
-
-
-# ── Startup ───────────────────────────────────────────
-
-@app.on_event("startup")
-def startup():
-    """Application startup."""
-    logger.info("Demo Order API starting up...")
-    logger.info("Chaos endpoints available at /chaos/*")
