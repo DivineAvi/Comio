@@ -36,7 +36,6 @@ class Project(BaseModel):
     repo_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     repo_full_name: Mapped[str | None] = mapped_column(String(255), nullable=True)  # e.g. "user/repo"
     default_branch: Mapped[str] = mapped_column(String(100), default="main", nullable=False)
-
     # Monitoring config — what metrics to watch (stored as JSON)
     monitoring_config: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
@@ -48,3 +47,4 @@ class Project(BaseModel):
     sandbox: Mapped["Sandbox | None"] = relationship(back_populates="project", uselist=False)  # One sandbox per project
     incidents: Mapped[list["Incident"]] = relationship(back_populates="project")
     deployments: Mapped[list["Deployment"]] = relationship(back_populates="project")
+    embeddings: Mapped[list["Embedding"]] = relationship("Embedding", back_populates="project", cascade="all, delete-orphan")

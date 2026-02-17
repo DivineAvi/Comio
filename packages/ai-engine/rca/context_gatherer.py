@@ -4,6 +4,7 @@ The RCA engine needs context to make good diagnoses:
 - Metrics: error rate, latency, resource usage
 - Recent deploys: did new code cause this?
 - Similar incidents: have we seen this before?
+- RAG retrieval: relevant runbooks and documentation
 - Logs: what errors were logged? (future)
 """
 
@@ -24,8 +25,13 @@ logger = logging.getLogger(__name__)
 class ContextGatherer:
     """Gathers contextual data for RCA analysis."""
 
-    def __init__(self, prometheus_url: str = "http://localhost:9090"):
+    def __init__(
+        self, 
+        prometheus_url: str = "http://localhost:9090",
+        enable_rag: bool = True,
+    ):
         self.prometheus_url = prometheus_url
+        self.enable_rag = enable_rag
         self.http_client = httpx.AsyncClient(timeout=30.0)
 
     async def gather_context(
@@ -51,6 +57,7 @@ class ContextGatherer:
             "metrics": [],
             "recent_deploys": [],
             "similar_incidents": [],
+            "rag_context": [],  # Retrieved runbooks and documentation
         }
 
         # Gather metrics from Prometheus
@@ -61,8 +68,13 @@ class ContextGatherer:
         similar = await self._find_similar_incidents(db, incident)
         context["similar_incidents"] = similar
 
-        # TODO: Fetch recent deploys from GitHub (Day 11+)
-        # TODO: Fetch logs from Loki (Day 11+)
+        # Retrieve relevant context from RAG (runbooks, past resolutions)
+        if self.enable_rag:
+            rag_results = await self._retrieve_rag_context(db, incident)
+            context["rag_context"] = rag_results
+
+        # TODO: Fetch recent deploys from GitHub (Day 12+)
+        # TODO: Fetch logs from Loki (Day 12+)
 
         return context
 
@@ -193,6 +205,56 @@ class ContextGatherer:
 
         except Exception as e:
             logger.error("Error finding similar incidents: %s", e)
+            return []
+
+    async def _retrieve_rag_context(
+        self,
+        db: AsyncSession,
+        incident: Incident,
+    ) -> list[dict]:
+        """Retrieve relevant context from RAG (runbooks, documentation).
+        
+        Uses the incident title and description to search for relevant
+        runbooks and past incident resolutions.
+        """
+        try:
+            from rag import RAGRetriever
+            from apps.api.config import settings
+
+            # Build query from incident details
+            query = f"{incident.title}. {incident.description or ''}"
+            
+            # Get API key for embeddings
+            api_key = settings.openai_api_key
+            if not api_key:
+                logger.warning("No OpenAI API key configured, skipping RAG retrieval")
+                return []
+
+            retriever = RAGRetriever(
+                embedding_provider="openai",
+                embedding_model="text-embedding-3-small",
+            )
+
+            # Retrieve relevant runbooks and incident reports
+            results = await retriever.retrieve(
+                db=db,
+                query=query,
+                api_key=api_key,
+                top_k=3,  # Get top 3 most relevant chunks
+                content_types=["runbook", "incident"],  # Only runbooks and past incidents
+                project_id=str(incident.project_id),
+            )
+
+            logger.info(
+                "Retrieved %d RAG context items for incident %s",
+                len(results),
+                incident.id,
+            )
+
+            return results
+
+        except Exception as e:
+            logger.error("Error retrieving RAG context: %s", e)
             return []
 
     async def close(self):

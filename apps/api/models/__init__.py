@@ -6,7 +6,7 @@ from apps.api.models.chat import ChatSession, ChatMessage, MessageRole
 from apps.api.models.incident import Incident, Diagnosis, Remediation, Severity, IncidentStatus, RemediationStatus
 from apps.api.models.deployment import Deployment, DeploymentStatus
 from apps.api.models.audit_log import AuditLog
-
+from apps.api.models.embedding import Embedding
 __all__ = [
     "BaseModel",
     "User", "UserRole",
@@ -16,4 +16,5 @@ __all__ = [
     "Incident", "Diagnosis", "Remediation", "Severity", "IncidentStatus", "RemediationStatus",
     "Deployment", "DeploymentStatus",
     "AuditLog",
+    "Embedding",
 ]

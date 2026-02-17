@@ -166,6 +166,20 @@ class RCAEngine:
                 )
             prompt_parts.append("")
 
+        # Add RAG retrieved context (runbooks, documentation)
+        if context.get("rag_context"):
+            prompt_parts.append("## Relevant Runbooks & Documentation")
+            prompt_parts.append(
+                f"Retrieved {len(context['rag_context'])} relevant documents:"
+            )
+            for idx, doc in enumerate(context["rag_context"], 1):
+                prompt_parts.append(
+                    f"\n### Document {idx} ({doc['content_type']}, similarity: {doc['similarity']:.2f})"
+                )
+                prompt_parts.append(f"**Source**: {doc['source']}")
+                prompt_parts.append(f"**Content**:\n{doc['content']}")
+            prompt_parts.append("")
+
         prompt_parts.append("## Your Task")
         prompt_parts.append(
             "Analyze this incident and provide a root cause diagnosis in JSON format as specified."

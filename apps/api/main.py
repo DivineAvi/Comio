@@ -10,6 +10,10 @@ from apps.api.routes import auth, health, incidents, projects, sandbox, chat, we
 from apps.api.middleware import RequestIDMiddleware
 from apps.api.database import engine
 
+from events.bus import create_event_bus
+from apps.api.services.event_service import event_service
+from apps.api.services.rca_service import rca_service
+
 logging.basicConfig(
     level=logging.DEBUG if settings.debug else logging.INFO,
     format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
@@ -36,10 +40,6 @@ async def lifespan(app: FastAPI):
     logger.info("Comio API v%s starting up...", settings.app_version)
     
     # Initialize event bus
-    from events.bus import create_event_bus
-    from apps.api.services.event_service import event_service
-    from apps.api.services.rca_service import rca_service
-    
     event_bus = create_event_bus("redis", redis_url=settings.redis_url)
     event_service.set_event_bus(event_bus)
     logger.info("Event bus initialized (Redis)")

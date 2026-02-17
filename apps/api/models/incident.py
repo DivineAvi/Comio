@@ -44,7 +44,7 @@ class Incident(BaseModel):
     project: Mapped["Project"] = relationship(back_populates="incidents")
     diagnosis: Mapped["Diagnosis | None"] = relationship(back_populates="incident", uselist=False)
     remediation: Mapped["Remediation | None"] = relationship(back_populates="incident", uselist=False)
-
+    embeddings: Mapped[list["Embedding"]] = relationship("Embedding", back_populates="incident", cascade="all, delete-orphan")
 
 class Diagnosis(BaseModel):
     __tablename__ = "diagnoses"
