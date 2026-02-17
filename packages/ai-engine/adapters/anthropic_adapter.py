@@ -73,6 +73,9 @@ class AnthropicAdapter(BaseLLMAdapter):
 
         if tools:
             request_args["tools"] = self._format_tools(tools)
+        
+        # Merge any additional kwargs
+        request_args.update(kwargs)
 
         response = await self._client.messages.create(**request_args)
 
@@ -102,6 +105,9 @@ class AnthropicAdapter(BaseLLMAdapter):
 
         if tools:
             request_args["tools"] = self._format_tools(tools)
+        
+        # Merge any additional kwargs
+        request_args.update(kwargs)
 
         async with self._client.messages.stream(**request_args) as stream:
             async for text in stream.text_stream:

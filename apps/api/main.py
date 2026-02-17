@@ -38,15 +38,24 @@ async def lifespan(app: FastAPI):
     # Initialize event bus
     from events.bus import create_event_bus
     from apps.api.services.event_service import event_service
+    from apps.api.services.rca_service import rca_service
     
     event_bus = create_event_bus("redis", redis_url=settings.redis_url)
     event_service.set_event_bus(event_bus)
     logger.info("Event bus initialized (Redis)")
+    
+    # Initialize RCA service
+    rca_service.set_event_bus(event_bus)
+    await rca_service.start_subscriber()
+    logger.info("RCA service initialized")
 
     yield  # App runs and handles requests here
 
     # --- Shutdown ---
     logger.info("Comio API shutting down...")
+    
+    # Close RCA service
+    await rca_service.close()
     
     # Close event bus
     await event_bus.close()

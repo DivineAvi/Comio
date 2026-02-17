@@ -48,6 +48,9 @@ class Settings(BaseSettings):
     gke_zone: str = "us-central1-a"             # GKE zone
     gcp_project_id: str = ""                    # GCP project ID
 
+    # Observability / Monitoring
+    prometheus_url: str = "http://localhost:9090"
+
     # LLM Providers
     openai_api_key: str = ""
     anthropic_api_key: str = ""

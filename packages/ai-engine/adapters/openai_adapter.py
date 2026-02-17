@@ -65,6 +65,9 @@ class OpenAIAdapter(BaseLLMAdapter):
         # Add tools if provided
         if tools:
             request_args["tools"] = self._format_tools(tools)
+        
+        # Merge any additional kwargs (e.g., response_format)
+        request_args.update(kwargs)
 
         # Make the API call
         response = await self._client.chat.completions.create(**request_args)
@@ -95,6 +98,9 @@ class OpenAIAdapter(BaseLLMAdapter):
 
         if tools:
             request_args["tools"] = self._format_tools(tools)
+        
+        # Merge any additional kwargs
+        request_args.update(kwargs)
 
         stream = await self._client.chat.completions.create(**request_args)
 

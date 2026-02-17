@@ -7,6 +7,7 @@ All routes are protected — require a valid JWT token.
 Users can only see incidents for projects they own.
 """
 
+import logging
 import uuid
 
 from fastapi import APIRouter, Depends, Query
@@ -15,10 +16,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from apps.api.auth import get_current_user
 from apps.api.database import get_db
 from apps.api.exceptions import NotFoundException, ForbiddenException, ComioException
-from apps.api.models.incident import Incident, Remediation, RemediationStatus
+from apps.api.models.incident import Incident, Remediation, RemediationStatus, IncidentStatus
 from apps.api.models.user import User
 from apps.api.repositories import project_repo
 from apps.api.repositories.incident import incident_repo
+from apps.api.services.rca_service import rca_service
 from apps.api.schemas.incident import (
     IncidentCreate,
     IncidentResponse,
@@ -182,6 +184,87 @@ async def get_incident(
         raise NotFoundException("Incident", str(incident_id))
 
     await _verify_project_ownership(incident.project_id, current_user, db)
+
+    return _incident_to_response(incident, include_relations=True)
+
+
+@router.get("/{incident_id}/diagnosis", response_model=DiagnosisResponse)
+async def get_diagnosis(
+    incident_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get the diagnosis for an incident.
+    
+    Returns the AI-generated root cause analysis, affected components,
+    and suggested actions.
+    """
+    incident = await incident_repo.get_with_details(db, incident_id)
+    if not incident:
+        raise NotFoundException("Incident", str(incident_id))
+
+    await _verify_project_ownership(incident.project_id, current_user, db)
+
+    if not incident.diagnosis:
+        raise NotFoundException("Diagnosis", "No diagnosis available for this incident")
+
+    return _diagnosis_to_response(incident.diagnosis)
+
+
+@router.post("/{incident_id}/diagnose", response_model=IncidentResponse)
+async def trigger_diagnosis(
+    incident_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Manually trigger RCA diagnosis for an incident.
+    
+    Useful for:
+    - Retrying failed diagnoses
+    - Re-analyzing after gathering more context
+    - Manual diagnosis of older incidents
+    
+    Note: This will replace any existing diagnosis.
+    """
+    incident = await incident_repo.get_with_details(db, incident_id)
+    if not incident:
+        raise NotFoundException("Incident", str(incident_id))
+
+    await _verify_project_ownership(incident.project_id, current_user, db)
+
+    # If diagnosis exists, delete it first
+    if incident.diagnosis:
+        await db.delete(incident.diagnosis)
+        await db.commit()
+        await db.refresh(incident)
+
+    # Run RCA
+    logger = logging.getLogger(__name__)
+    logger.info("Manual diagnosis triggered for incident %s by user %s", incident_id, current_user.id)
+    
+    diagnosis_result = await rca_service.rca_engine.diagnose(db, incident)
+
+    # Create database Diagnosis model
+    from apps.api.models.incident import Diagnosis as DiagnosisModel
+    from apps.api.config import settings
+    
+    diagnosis_model = DiagnosisModel(
+        incident_id=incident.id,
+        root_cause=diagnosis_result.root_cause,
+        category=diagnosis_result.category.value,
+        confidence=diagnosis_result.confidence,
+        explanation=diagnosis_result.reasoning,
+        evidence=[e.__dict__ for e in diagnosis_result.evidence],
+        affected_components=diagnosis_result.affected_components,
+        suggested_actions=[a.__dict__ for a in diagnosis_result.suggested_actions],
+        llm_provider=settings.default_llm_provider,
+        llm_model=settings.default_llm_model,
+    )
+    
+    db.add(diagnosis_model)
+    incident.status = IncidentStatus.DIAGNOSED
+    await db.commit()
+    await db.refresh(incident)
 
     return _incident_to_response(incident, include_relations=True)
 

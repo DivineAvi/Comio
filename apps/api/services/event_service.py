@@ -153,8 +153,8 @@ class EventService:
                 severity=incident.severity.value,
                 status=incident.status.value,
             )
-            await self._event_bus.publish("incidents.created", incident_event)
-            logger.debug("Published incident event to 'incidents.created'")
+            await self._event_bus.publish("incident.created", incident_event)
+            logger.debug("Published incident event to 'incident.created'")
 
         return incident
 
