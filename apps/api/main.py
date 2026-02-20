@@ -9,7 +9,7 @@ from apps.api.exceptions import ComioException, comio_exception_handler
 from apps.api.routes import auth, health, incidents, projects, sandbox, chat, webhooks
 from apps.api.middleware import RequestIDMiddleware
 from apps.api.database import engine
-
+from anomaly_detector import AnomalyWorker
 from events.bus import create_event_bus
 from apps.api.services.event_service import event_service
 from apps.api.services.rca_service import rca_service
@@ -49,6 +49,19 @@ async def lifespan(app: FastAPI):
     await rca_service.start_subscriber()
     logger.info("RCA service initialized")
 
+    # Initialize Anomaly Detection Worker
+
+
+    anomaly_worker = AnomalyWorker(
+        prometheus_url=settings.prometheus_url,
+        redis_url=settings.redis_url,
+        event_bus=event_bus,
+        check_interval_minutes=5,
+        training_lookback_hours=168,  # 1 week
+    )
+    await anomaly_worker.start()
+    logger.info("Anomaly detection worker initialized")
+
     yield  # App runs and handles requests here
 
     # --- Shutdown ---
@@ -56,7 +69,8 @@ async def lifespan(app: FastAPI):
     
     # Close RCA service
     await rca_service.close()
-    
+    # Close anomaly worker
+    await anomaly_worker.close()
     # Close event bus
     await event_bus.close()
     await event_service.close()
