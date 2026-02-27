@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from apps.api.config import settings
 from apps.api.exceptions import ComioException, comio_exception_handler
-from apps.api.routes import auth, health, incidents, projects, sandbox, chat, webhooks
+from apps.api.routes import auth, health, incidents, projects, sandbox, chat, webhooks, remediations
 from apps.api.middleware import RequestIDMiddleware
 from apps.api.database import engine
 from anomaly_detector import AnomalyWorker
@@ -118,7 +118,7 @@ def create_app() -> FastAPI:
     application.include_router(sandbox.router)    # /projects/{id}/sandbox/*
     application.include_router(chat.router)    # /projects/{id}/sandbox/chat/*
     application.include_router(webhooks.router)    # /webhooks/alert, /webhooks/test-alert
-    # Future: sandbox, chat, deploy routers will be added here
+    application.include_router(remediations.router)  # /remediations (approval workflow)
 
     return application
 

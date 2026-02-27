@@ -16,11 +16,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from apps.api.auth import get_current_user
 from apps.api.database import get_db
 from apps.api.exceptions import NotFoundException, ForbiddenException, ComioException
-from apps.api.models.incident import Incident, Remediation, RemediationStatus, IncidentStatus
+from apps.api.models.incident import Incident, IncidentStatus
 from apps.api.models.user import User
 from apps.api.repositories import project_repo
 from apps.api.repositories.incident import incident_repo
 from apps.api.services.rca_service import rca_service
+from apps.api.services.approval_service import approve as approval_approve, reject as approval_reject
 from apps.api.schemas.incident import (
     IncidentCreate,
     IncidentResponse,
@@ -311,8 +312,8 @@ async def approve_remediation(
 ):
     """Approve a proposed remediation (fix) for an incident.
 
-    After approval, the system will create a PR with the fix.
-    This is the human-in-the-loop step — AI proposes, human approves.
+    After approval, use POST /remediations/{id}/apply to create the PR.
+    Only operators and admins can approve. Pending remediations expire after 24h.
     """
     incident = await incident_repo.get_with_details(db, incident_id)
     if not incident:
@@ -323,20 +324,8 @@ async def approve_remediation(
     if not incident.remediation:
         raise ComioException("No remediation proposed for this incident", status_code=400)
 
-    if incident.remediation.status != RemediationStatus.PENDING.value:
-        raise ComioException(
-            f"Remediation is already {incident.remediation.status}", status_code=400
-        )
-
-    # Update remediation status
-    incident.remediation.status = RemediationStatus.APPROVED
-    incident.remediation.reviewed_by = current_user.id
-    incident.remediation.review_comment = body.comment
-    await db.commit()
-    await db.refresh(incident)
-
-    # TODO (Day 12): Trigger PR creation via GitHub API
-
+    await approval_approve(db, incident.remediation.id, current_user, comment=body.comment)
+    incident = await incident_repo.get_with_details(db, incident_id)
     return _incident_to_response(incident, include_relations=True)
 
 
@@ -347,10 +336,7 @@ async def reject_remediation(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Reject a proposed remediation with a reason.
-
-    The AI can use the rejection reason to propose a better fix.
-    """
+    """Reject a proposed remediation with a reason. Only operators and admins can reject."""
     incident = await incident_repo.get_with_details(db, incident_id)
     if not incident:
         raise NotFoundException("Incident", str(incident_id))
@@ -360,15 +346,6 @@ async def reject_remediation(
     if not incident.remediation:
         raise ComioException("No remediation proposed for this incident", status_code=400)
 
-    if incident.remediation.status != RemediationStatus.PENDING.value:
-        raise ComioException(
-            f"Remediation is already {incident.remediation.status}", status_code=400
-        )
-
-    incident.remediation.status = RemediationStatus.REJECTED
-    incident.remediation.reviewed_by = current_user.id
-    incident.remediation.review_comment = body.reason
-    await db.commit()
-    await db.refresh(incident)
-
+    await approval_reject(db, incident.remediation.id, current_user, reason=body.reason)
+    incident = await incident_repo.get_with_details(db, incident_id)
     return _incident_to_response(incident, include_relations=True)

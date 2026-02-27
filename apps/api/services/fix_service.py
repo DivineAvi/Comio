@@ -69,4 +69,13 @@ async def generate_fix_for_incident(
     )
     db.add(remediation)
     logger.info("Created remediation for incident %s (fix_type=%s)", incident_id, fix_result.fix_type)
+
+    # Emit event for approval UI / WebSocket (Day 21 can subscribe)
+    from apps.api.services.event_service import event_service
+    await event_service.publish("remediations.pending", {
+        "remediation_id": str(remediation.id),
+        "incident_id": str(incident.id),
+        "project_id": str(incident.project_id),
+    })
+
     return remediation

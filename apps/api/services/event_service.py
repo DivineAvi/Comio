@@ -20,7 +20,7 @@ import hashlib
 import json
 import logging
 import uuid
-from datetime import timedelta
+from datetime import timedelta, datetime, timezone
 
 import redis.asyncio as redis
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -56,6 +56,24 @@ class EventService:
     def set_event_bus(self, event_bus):
         """Inject the event bus (called during app startup)."""
         self._event_bus = event_bus
+
+    async def publish(self, topic: str, payload: dict) -> None:
+        """Publish a generic event to the bus (e.g. for WebSocket / future subscribers)."""
+        if not self._event_bus or not hasattr(self._event_bus, "publish"):
+            return
+        # Wrap dict in an object that has to_dict() and event_type for the bus
+        class _Event:
+            event_type = type("EventType", (), {"value": topic})()
+            def to_dict(self):
+                return {
+                    "id": str(uuid.uuid4()),
+                    "event_type": topic,
+                    "source": "api",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "metadata": {},
+                    "payload": payload,
+                }
+        await self._event_bus.publish(topic, _Event())
 
     # ── Deduplication ─────────────────────────────────────
 
