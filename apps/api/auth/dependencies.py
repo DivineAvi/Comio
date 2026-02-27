@@ -80,8 +80,7 @@ def require_role(*allowed_roles: UserRole):
     async def role_checker(
         current_user: User = Depends(get_current_user),
     ) -> User:
-        # Compare enum to enum (user.role from DB is UserRole)
-        if current_user.role not in allowed_roles:
+        if current_user.role not in [role.value for role in allowed_roles]:
             raise ForbiddenException(
                 f"This action requires one of these roles: {', '.join(r.value for r in allowed_roles)}"
             )
