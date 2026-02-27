@@ -28,6 +28,11 @@ class RemediationReject(BaseModel):
     reason: str = Field(min_length=1)
 
 
+class GenerateFixRequest(BaseModel):
+    """Optional code context for fix generation (e.g. from sandbox)."""
+    code_context: dict[str, str] = Field(default_factory=dict, description="file_path -> file_content")
+
+
 # ── Response Schemas ───────────────────────────────────
 
 class DiagnosisResponse(BaseResponse):

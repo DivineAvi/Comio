@@ -10,7 +10,7 @@ Users can only see incidents for projects they own.
 import logging
 import uuid
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Body, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.auth import get_current_user
@@ -29,6 +29,7 @@ from apps.api.schemas.incident import (
     RemediationResponse,
     RemediationApprove,
     RemediationReject,
+    GenerateFixRequest,
 )
 
 router = APIRouter(prefix="/incidents", tags=["incidents"])
@@ -266,6 +267,38 @@ async def trigger_diagnosis(
     await db.commit()
     await db.refresh(incident)
 
+    return _incident_to_response(incident, include_relations=True)
+
+
+@router.post("/{incident_id}/generate-fix", response_model=IncidentResponse)
+async def generate_fix(
+    incident_id: uuid.UUID,
+    body: GenerateFixRequest = Body(default_factory=GenerateFixRequest),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Generate a fix proposal from the incident's diagnosis (Day 13).
+
+    Requires the incident to have a diagnosis first (run diagnose if needed).
+    Optionally pass code_context (file path -> content) from the project sandbox
+    so the LLM can propose concrete code changes.
+    """
+    incident = await incident_repo.get_with_details(db, incident_id)
+    if not incident:
+        raise NotFoundException("Incident", str(incident_id))
+
+    await _verify_project_ownership(incident.project_id, current_user, db)
+
+    try:
+        from apps.api.services.fix_service import generate_fix_for_incident
+
+        await generate_fix_for_incident(db, incident_id, code_context=body.code_context or None)
+        await db.commit()
+    except ValueError as e:
+        raise ComioException(str(e), status_code=400)
+
+    await db.refresh(incident)
+    incident = await incident_repo.get_with_details(db, incident_id)
     return _incident_to_response(incident, include_relations=True)
 
 
