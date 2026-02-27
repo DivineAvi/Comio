@@ -56,6 +56,11 @@ async def get_current_user(
 
     return user
 
+def require_operator_or_admin(current_user: User = Depends(get_current_user)) -> User:
+    """Dependency: current user must be operator or admin (for approval actions)."""
+    if current_user.role not in (UserRole.OPERATOR, UserRole.ADMIN):
+        raise ForbiddenException("Only operators or admins can perform this action")
+    return current_user
 
 def require_role(*allowed_roles: UserRole):
     """Create a dependency that checks the user has one of the allowed roles.
@@ -75,7 +80,8 @@ def require_role(*allowed_roles: UserRole):
     async def role_checker(
         current_user: User = Depends(get_current_user),
     ) -> User:
-        if current_user.role not in [role.value for role in allowed_roles]:
+        # Compare enum to enum (user.role from DB is UserRole)
+        if current_user.role not in allowed_roles:
             raise ForbiddenException(
                 f"This action requires one of these roles: {', '.join(r.value for r in allowed_roles)}"
             )

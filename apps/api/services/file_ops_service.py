@@ -15,7 +15,9 @@ import base64
 import json
 import logging
 import posixpath
+import httpx
 
+from apps.api.config import settings
 from apps.api.services.sandbox_manager import sandbox_manager, ExecResult
 
 logger = logging.getLogger(__name__)
@@ -348,15 +350,42 @@ class FileOpsService:
 
         return sha_result.stdout.strip()
 
+
     async def create_pr(
         self, container_id: str, title: str, body: str, base: str = "main"
     ) -> str:
-        """Create a GitHub PR from sandbox changes.
+        """Create a GitHub PR from the current sandbox branch. Uses GITHUB_TOKEN or project token."""
+        # 1) Get current branch and remote repo from sandbox
+        branch_result = await sandbox_manager.exec_command(container_id, ["git", "rev-parse", "--abbrev-ref", "HEAD"])
+        if branch_result.exit_code != 0:
+            raise ValueError("Could not get current branch")
+        branch = branch_result.stdout.strip()
+        remote_result = await sandbox_manager.exec_command(container_id, ["git", "config", "--get", "remote.origin.url"])
+        if remote_result.exit_code != 0:
+            raise NotImplementedError("No remote.origin.url; push repo first")
+        # Parse owner/repo from URL (e.g. https://github.com/owner/repo or git@github.com:owner/repo.git)
+        url = remote_result.stdout.strip()
+        if "github.com" not in url:
+            raise NotImplementedError("Only GitHub remotes supported")
+        parts = url.replace(".git", "").rstrip("/").split("/")
+        repo_name = parts[-1]
+        owner = parts[-2]
+        if ":" in owner:
+            owner = owner.split(":")[-1]
 
-        Requires GitHub OAuth to be configured (Day 10-11).
-        Returns the PR URL.
-        """
-        raise NotImplementedError("GitHub OAuth required — coming Day 10-11")
+        token = settings.github_token  # or resolve from project.owner.github_access_token
+        if not token:
+            raise NotImplementedError("GitHub token required (GITHUB_TOKEN or connect GitHub OAuth)")
+
+        async with httpx.AsyncClient() as client:
+            r = await client.post(
+                f"https://api.github.com/repos/{owner}/{repo_name}/pulls",
+                headers={"Authorization": f"token {token}", "Accept": "application/vnd.github.v3+json"},
+                json={"title": title, "body": body, "head": branch, "base": base},
+            )
+            r.raise_for_status()
+            data = r.json()
+            return data.get("html_url", "")
 
 
 # Singleton instance
