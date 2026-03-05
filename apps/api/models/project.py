@@ -44,7 +44,7 @@ class Project(BaseModel):
 
     # Relationships
     owner: Mapped["User"] = relationship(back_populates="projects")
-    sandbox: Mapped["Sandbox | None"] = relationship(back_populates="project", uselist=False)  # One sandbox per project
-    incidents: Mapped[list["Incident"]] = relationship(back_populates="project")
-    deployments: Mapped[list["Deployment"]] = relationship(back_populates="project")
+    sandbox: Mapped["Sandbox | None"] = relationship(back_populates="project", uselist=False, cascade="all, delete-orphan")  # One sandbox per project
+    incidents: Mapped[list["Incident"]] = relationship(back_populates="project", cascade="all, delete-orphan")
+    deployments: Mapped[list["Deployment"]] = relationship(back_populates="project", cascade="all, delete-orphan")
     embeddings: Mapped[list["Embedding"]] = relationship("Embedding", back_populates="project", cascade="all, delete-orphan")

@@ -66,11 +66,10 @@ async def lifespan(app: FastAPI):
 
     # --- Shutdown ---
     logger.info("Comio API shutting down...")
-    
-    # Close RCA service
+    # Close rca service
     await rca_service.close()
     # Close anomaly worker
-    await anomaly_worker.close()
+    await anomaly_worker.stop()
     # Close event bus
     await event_bus.close()
     await event_service.close()

@@ -65,19 +65,26 @@ class FileOpsService:
         """List files and directories at a path inside the sandbox.
 
         Uses `find` with -printf for structured output.
-        Excludes .git/ internals — users don't need to see those.
+        Excludes massive project internals to keep context clean.
         """
         safe = self._safe_path(path)
+        
+        # Build prune conditions for heavy directories
+        exclude_dirs = [
+            ".git", "node_modules", "__pycache__", ".venv", "venv", 
+            "env", ".next", "dist", "build", "coverage", ".cache"
+        ]
+        prune_cond = " -o ".join(f"-name '{d}'" for d in exclude_dirs)
 
         if recursive:
             cmd = (
-                f"find {safe} -not -path '*/\\.git/*' -not -name '.git' "
+                f"find {safe} \\( {prune_cond} \\) -prune -o "
                 f"-printf '%y|%s|%P\\n'"
             )
         else:
             cmd = (
                 f"find {safe} -maxdepth 1 -not -path '{safe}' "
-                f"-not -path '*/\\.git/*' -not -name '.git' "
+                f"\\( {prune_cond} \\) -prune -o "
                 f"-printf '%y|%s|%P\\n'"
             )
 
@@ -127,14 +134,18 @@ class FileOpsService:
         if size > MAX_FILE_SIZE:
             raise ValueError(f"File too large: {size} bytes (max {MAX_FILE_SIZE})")
 
-        # Step 2: Check if binary
+        # Empty files are always readable — skip mime/binary check
+        if size == 0:
+            return {"path": path, "content": "", "size": 0, "lines": 0}
+
+        # Step 2: Check if binary (only for non-empty files)
         file_result = await sandbox_manager.exec_command(
             container_id, ["file", "--mime-type", "-b", safe]
         )
         mime = file_result.stdout.strip()
         text_mimes = ("text/", "application/json", "application/xml",
                        "application/javascript", "application/toml",
-                       "application/x-yaml")
+                       "application/x-yaml", "inode/x-empty")
         if not any(mime.startswith(m) for m in text_mimes):
             raise ValueError(f"Binary file cannot be read as text: {mime}")
 
@@ -210,7 +221,10 @@ class FileOpsService:
         # Escape single quotes in query to prevent shell injection
         safe_query = query.replace("'", "'\\''")
 
-        cmd = f"rg --json --max-count 50 '{safe_query}'"
+        # Explicitly ignore massive dependency directories regardless of .gitignore
+        ignores = "--glob '!node_modules/**' --glob '!__pycache__/**' --glob '!.venv/**' --glob '!venv/**' --glob '!.next/**' --glob '!dist/**' --glob '!build/**' --glob '!.cache/**'"
+
+        cmd = f"rg {ignores} --json --max-count 50 '{safe_query}'"
         if glob:
             safe_glob = glob.replace("'", "'\\''")
             cmd += f" --glob '{safe_glob}'"
@@ -302,14 +316,75 @@ class FileOpsService:
         }
 
     async def git_diff(self, container_id: str, file: str | None = None) -> str:
-        """Get git diff of changes in the sandbox."""
-        cmd = ["git", "diff"]
+        """Get git diff of ALL changes in the sandbox.
+
+        Handles three cases:
+        1. Modified tracked files (git diff for unstaged, git diff --cached for staged)
+        2. Untracked new files (git diff --no-index /dev/null <file>)
+        3. Repos with no commits yet — auto-heals by making an initial commit
+        """
+        # ── Auto-heal: ensure git is initialized with at least one commit ──
+        log_check = await sandbox_manager.exec_command(
+            container_id, ["git", "log", "--oneline", "-1"]
+        )
+        if log_check.exit_code != 0 or not log_check.stdout.strip():
+            # No commits yet — set up git config and make initial commit
+            logger.info("git_diff: no commits found, initializing git for container %s", container_id[:12])
+            for cmd in [
+                ["git", "config", "user.email", "comio@comio.dev"],
+                ["git", "config", "user.name", "Comio AI"],
+            ]:
+                await sandbox_manager.exec_command(container_id, cmd)
+            await sandbox_manager.exec_command(
+                container_id,
+                ["git", "commit", "--allow-empty", "-m", "chore: initial commit (Comio sandbox)"],
+            )
+
+        parts: list[str] = []
+
         if file:
             safe = self._safe_path(file)
-            cmd += ["--", safe]
+            # Try staged diff first, then unstaged
+            for staged_flag in ["--cached", ""]:
+                cmd = ["git", "diff"] + ([staged_flag] if staged_flag else []) + ["--", safe]
+                result = await sandbox_manager.exec_command(container_id, cmd)
+                if result.stdout.strip():
+                    parts.append(result.stdout)
+            return "\n".join(parts)
 
-        result = await sandbox_manager.exec_command(container_id, cmd)
-        return result.stdout
+        # 1) Unstaged modifications to tracked files
+        diff_result = await sandbox_manager.exec_command(
+            container_id, ["git", "diff"]
+        )
+        if diff_result.stdout.strip():
+            parts.append(diff_result.stdout)
+
+        # 2) Staged changes (git diff --cached / against HEAD or empty-tree)
+        cached_result = await sandbox_manager.exec_command(
+            container_id, ["git", "diff", "--cached"]
+        )
+        if cached_result.stdout.strip():
+            parts.append(cached_result.stdout)
+
+        # 3) Untracked files — show them as full additions using /dev/null diff trick
+        status_result = await sandbox_manager.exec_command(
+            container_id,
+            ["git", "ls-files", "--others", "--exclude-standard", "/workspace"],
+        )
+        untracked_files = [
+            f.strip() for f in status_result.stdout.splitlines() if f.strip()
+        ]
+        for uf in untracked_files[:20]:  # cap at 20 to avoid huge output
+            diff_new = await sandbox_manager.exec_command(
+                container_id,
+                ["git", "diff", "--no-index", "/dev/null", uf],
+            )
+            # git diff --no-index exits with 1 when there are differences (normal)
+            if diff_new.stdout.strip():
+                parts.append(diff_new.stdout)
+
+        return "\n".join(parts)
+
 
     async def create_branch(self, container_id: str, branch_name: str) -> None:
         """Create and checkout a new git branch."""
@@ -352,7 +427,12 @@ class FileOpsService:
 
 
     async def create_pr(
-        self, container_id: str, title: str, body: str, base: str = "main"
+        self,
+        container_id: str,
+        title: str,
+        body: str,
+        base: str = "main",
+        token: str | None = None,
     ) -> str:
         """Create a GitHub PR from the current sandbox branch. Uses GITHUB_TOKEN or project token."""
         # 1) Get current branch and remote repo from sandbox
@@ -373,14 +453,15 @@ class FileOpsService:
         if ":" in owner:
             owner = owner.split(":")[-1]
 
-        token = settings.github_token  # or resolve from project.owner.github_access_token
-        if not token:
+        # Prefer an explicit token (e.g. from the project owner), fall back to global settings
+        token_to_use = token or settings.github_token
+        if not token_to_use:
             raise NotImplementedError("GitHub token required (GITHUB_TOKEN or connect GitHub OAuth)")
 
         async with httpx.AsyncClient() as client:
             r = await client.post(
                 f"https://api.github.com/repos/{owner}/{repo_name}/pulls",
-                headers={"Authorization": f"token {token}", "Accept": "application/vnd.github.v3+json"},
+                headers={"Authorization": f"token {token_to_use}", "Accept": "application/vnd.github.v3+json"},
                 json={"title": title, "body": body, "head": branch, "base": base},
             )
             r.raise_for_status()

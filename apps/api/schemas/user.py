@@ -39,6 +39,7 @@ class UserResponse(BaseResponse):
     is_active: bool
     github_username: str | None = None
     avatar_url: str | None = None
+    llm_provider: str | None = None
 
 
 class TokenResponse(BaseModel):
@@ -47,3 +48,14 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
     expires_in: int       # Seconds until expiry
     user: UserResponse    # Include user data with the token
+
+
+class GitHubConnectRequest(BaseModel):
+    """Request body for connecting a GitHub account using a personal access token."""
+    personal_access_token: str = Field(min_length=1)
+
+
+class UserLLMSettings(BaseModel):
+    """Per-user LLM configuration stored in the database."""
+    llm_provider: str = Field(min_length=1)
+    llm_api_key: str = Field(min_length=1)

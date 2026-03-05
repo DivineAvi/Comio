@@ -39,6 +39,10 @@ class User(BaseModel):
     # Avatar URL from GitHub
     avatar_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
+    # Per-user LLM settings — which provider and key to use for chat/fix/RCA
+    llm_provider: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    llm_api_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     # Relationships — SQLAlchemy loads these automatically when accessed
     # "back_populates" creates a two-way link (user.projects ↔ project.owner)
     projects: Mapped[list["Project"]] = relationship(back_populates="owner")

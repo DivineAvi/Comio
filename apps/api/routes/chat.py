@@ -220,11 +220,13 @@ async def send_message(
     if not sandbox.container_id:
         raise ComioException("Sandbox has no container", status_code=400)
 
-    # This can take a while — the agent may make multiple LLM calls + tool executions
+    # This can take a while — the agent may make multiple LLM calls + tool executions.
+    # LLM provider and key are resolved from the current user's stored settings in the DB.
     events = await chat_service.send_message(
         db=db,
         session=session,
         sandbox=sandbox,
+        user=current_user,
         user_message=body.content,
         project_name=project.name,
         project_description=project.description,

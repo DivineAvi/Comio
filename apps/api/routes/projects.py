@@ -14,7 +14,7 @@ from apps.api.database import get_db
 from apps.api.exceptions import NotFoundException, ForbiddenException
 from apps.api.models.project import Project, ProjectOrigin, ProjectType
 from apps.api.models.user import User
-from apps.api.repositories import project_repo
+from apps.api.repositories import project_repo, sandbox_repo
 from apps.api.services.sandbox_manager import sandbox_manager
 from apps.api.schemas.project import (
     ProjectImport,
@@ -215,12 +215,23 @@ async def delete_project(
 
     Returns 204 No Content on success (no response body).
 
-    TODO (Day 5): Also destroy the sandbox container and volume.
+    Destroys the sandbox container + volume, then removes all DB records.
     """
     project = await _get_user_project(project_id, current_user, db)
 
-    # TODO (Day 5): Destroy sandbox first
-    # if project.sandbox:
-    #     await sandbox_manager.destroy_sandbox(project.sandbox.container_id)
+    # Destroy sandbox container + volume before removing DB record
+    sandbox = await sandbox_repo.get_by_project(db, project_id)
+    if sandbox:
+        if sandbox.container_id:
+            try:
+                await sandbox_manager.destroy_sandbox(
+                    sandbox.container_id,
+                    sandbox.volume_name,
+                )
+            except Exception as e:
+                logger.warning("Failed to destroy sandbox for project %s: %s", project_id, e)
+        
+        await db.delete(sandbox)
+        await db.flush()
 
     await project_repo.delete(db, project)

@@ -29,7 +29,7 @@ class ChatSession(BaseModel):
     # Relationships
     sandbox: Mapped["Sandbox"] = relationship(back_populates="chat_sessions")
     user: Mapped["User"] = relationship()
-    messages: Mapped[list["ChatMessage"]] = relationship(back_populates="session", order_by="ChatMessage.created_at")
+    messages: Mapped[list["ChatMessage"]] = relationship(back_populates="session", order_by="ChatMessage.created_at", cascade="all, delete-orphan")
 
 
 class ChatMessage(BaseModel):

@@ -120,8 +120,8 @@ class SandboxManager:
             self._create_container, volume_name, container_name
         )
 
-        # Initialize empty git repo
-        await self.exec_command(container.id, ["git", "init"])
+        # Initialize git repo with a proper initial commit so `git diff` works
+        await self._init_git_repo(container.id)
 
         sandbox = Sandbox(
             container_id=container.id,
@@ -136,6 +136,53 @@ class SandboxManager:
 
         logger.info("Blank sandbox created: %s (container: %s)", sandbox.id, container.short_id)
         return sandbox
+
+    async def _init_git_repo(self, container_id: str) -> None:
+        """Initialize a git repo in /workspace with a proper initial commit.
+
+        Without an initial commit, `git diff` and `git diff --cached` return
+        nothing — there's no HEAD to compare against. This sets up:
+        - git config user.email/name (required to commit)
+        - .gitignore for common junk
+        - An initial empty commit as the baseline
+        """
+        cmds = [
+            # Init repo on main branch directly
+            ["git", "init", "-b", "main"],
+            # Configure git identity (required to commit)
+            ["git", "config", "user.email", "comio@comio.dev"],
+            ["git", "config", "user.name", "Comio AI"],
+        ]
+        for cmd in cmds:
+            result = await self.exec_command(container_id, cmd)
+            if result.exit_code != 0:
+                logger.warning("git setup cmd failed: %s → %s", cmd, result.stderr)
+
+        # Create a .gitignore
+        gitignore_content = (
+            "__pycache__/\n*.pyc\n*.pyo\n.env\nnode_modules/\n.DS_Store\n"
+            "dist/\nbuild/\n.next/\n*.egg-info/\n.venv/\nvenv/\n"
+        )
+        encoded = __import__("base64").b64encode(gitignore_content.encode()).decode()
+        await self.exec_command(
+            container_id,
+            ["bash", "-c", f"echo '{encoded}' | base64 -d > /workspace/.gitignore"],
+        )
+
+        # Stage .gitignore and make the initial commit
+        await self.exec_command(container_id, ["git", "add", ".gitignore"])
+        init_result = await self.exec_command(
+            container_id,
+            ["git", "commit", "-m", "chore: initial commit (Comio sandbox)"],
+        )
+        if init_result.exit_code != 0:
+            # Fallback: allow-empty commit if .gitignore add fails
+            await self.exec_command(
+                container_id,
+                ["git", "commit", "--allow-empty", "-m", "chore: initial commit (Comio sandbox)"],
+            )
+        logger.info("Git repo initialized with initial commit in container %s", container_id[:12])
+
 
     async def start_sandbox(self, container_id: str) -> None:
         """Start a stopped sandbox container."""

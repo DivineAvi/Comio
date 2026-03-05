@@ -37,4 +37,4 @@ class Sandbox(BaseModel):
 
     # Relationships
     project: Mapped["Project"] = relationship(back_populates="sandbox")
-    chat_sessions: Mapped[list["ChatSession"]] = relationship(back_populates="sandbox")
+    chat_sessions: Mapped[list["ChatSession"]] = relationship(back_populates="sandbox", cascade="all, delete-orphan")

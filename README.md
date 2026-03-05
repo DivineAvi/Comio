@@ -83,11 +83,7 @@ This starts PostgreSQL (port 5432) and Redis (port 6379).
 ### 3. Set up the backend
 
 ```bash
-cd apps/api
-python -m venv .venv
-source .venv/bin/activate    # On Windows: .venv\Scripts\activate
-pip install -e .
-uvicorn apps.api.main:app --reload --host 0.0.0.0 --port 8000
+lsof -ti tcp:8000 | xargs kill -9 2>/dev/null || true; cd /Users/abhinavkumar/Projects/Comio && source apps/api/.venv/bin/activate && uvicorn apps.api.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 API will be available at `http://localhost:8000`
@@ -102,6 +98,16 @@ npm run dev
 ```
 
 Frontend will be available at `http://localhost:3000`
+
+### 5. Using the project sandbox and chat
+
+- Visit `/projects` in the frontend to see your projects.
+- Use **Import Repo** to call `POST /projects/import` and provision a sandbox for an existing GitHub repository.
+- Use **Create Project** to call `POST /projects/create` and provision a blank sandbox for a new AI-created project.
+- From a project row or detail page, click **Open Sandbox** to go to `/projects/{id}/sandbox`, where you can:
+  - Start the per-project Docker sandbox.
+  - Browse files via the left-hand file tree (backed by `/projects/{id}/sandbox/files`).
+  - Chat with the AI assistant; messages are sent via `/projects/{id}/sandbox/chat/sessions/{session_id}/messages` and rendered from the returned event stream.
 
 ## Development
 

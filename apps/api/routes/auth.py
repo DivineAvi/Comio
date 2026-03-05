@@ -10,13 +10,20 @@ These endpoints handle:
 from fastapi import APIRouter, Depends
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.ext.asyncio import AsyncSession
+import httpx
 
 from apps.api.auth import hash_password, verify_password, create_access_token, get_current_user
 from apps.api.database import get_db
 from apps.api.exceptions import ComioException, UnauthorizedException
 from apps.api.models.user import User
 from apps.api.repositories import user_repo
-from apps.api.schemas.user import UserCreate, UserResponse, TokenResponse
+from apps.api.schemas.user import (
+    UserCreate,
+    UserResponse,
+    TokenResponse,
+    GitHubConnectRequest,
+    UserLLMSettings,
+)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -38,6 +45,7 @@ def _user_to_response(user: User) -> UserResponse:
         is_active=user.is_active,
         github_username=user.github_username,
         avatar_url=user.avatar_url,
+        llm_provider=user.llm_provider,
     )
 
 
@@ -149,4 +157,63 @@ async def get_me(current_user: User = Depends(get_current_user)):
     Notice how simple it is: just add Depends(get_current_user).
     All the token extraction and validation happens automatically.
     """
+    return _user_to_response(current_user)
+
+
+@router.post("/llm", response_model=UserResponse)
+async def update_llm_settings(
+    body: UserLLMSettings,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update the current user's LLM provider and API key stored in the database."""
+    current_user.llm_provider = body.llm_provider
+    current_user.llm_api_key = body.llm_api_key
+
+    db.add(current_user)
+    await db.commit()
+    await db.refresh(current_user)
+
+    return _user_to_response(current_user)
+
+
+@router.post("/github/connect", response_model=UserResponse)
+async def connect_github(
+    body: GitHubConnectRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Connect the current user's GitHub account using a personal access token.
+
+    We verify the token with GitHub's API, then store:
+    - github_id
+    - github_username
+    - avatar_url
+    - github_access_token
+    """
+    async with httpx.AsyncClient() as client:
+      resp = await client.get(
+          "https://api.github.com/user",
+          headers={
+              "Authorization": f"token {body.personal_access_token}",
+              "Accept": "application/vnd.github+json",
+          },
+          timeout=10.0,
+      )
+    if resp.status_code != 200:
+        raise ComioException(
+            message="Failed to verify GitHub token; check that it is valid and has appropriate scopes.",
+            status_code=400,
+        )
+
+    data = resp.json()
+    current_user.github_id = str(data.get("id")) if data.get("id") is not None else None
+    current_user.github_username = data.get("login")
+    current_user.github_access_token = body.personal_access_token
+    current_user.avatar_url = data.get("avatar_url")
+
+    db.add(current_user)
+    await db.commit()
+    await db.refresh(current_user)
+
     return _user_to_response(current_user)

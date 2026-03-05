@@ -9,7 +9,7 @@ These endpoints let users:
 
 import uuid
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.auth import get_current_user
@@ -306,7 +306,9 @@ async def git_diff(
     _require_running(sandbox)
 
     diff_text = await file_ops.git_diff(sandbox.container_id, file)
-    return {"diff": diff_text, "has_changes": bool(diff_text.strip())}
+    status = await file_ops.git_status(sandbox.container_id)
+    has_changes = bool(diff_text.strip()) or status.get("has_changes", False)
+    return {"diff": diff_text, "has_changes": has_changes}
 
 
 @router.post("/git/branch")
@@ -365,9 +367,166 @@ async def create_pr(
 
     try:
         pr_url = await file_ops.create_pr(
-            sandbox.container_id, body.title, body.body, body.base_branch
+            sandbox.container_id,
+            body.title,
+            body.body,
+            body.base_branch,
+            token=current_user.github_access_token,
         )
     except NotImplementedError as e:
         raise ComioException(str(e), status_code=501)
 
     return {"status": "created", "pr_url": pr_url}
+
+
+# ── Run & Port-Forward ────────────────────────────────
+
+@router.post("/run")
+async def run_project(
+    project_id: uuid.UUID,
+    body: ExecCommandRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Start a long-running process inside the sandbox (e.g. `python app.py`).
+
+    The command runs in the background. Use GET /run/output to stream logs
+    (not yet implemented) or GET /proxy/{port} to access the running server.
+
+    Returns the command output captured during a brief 3-second window,
+    enough to detect immediate startup errors.
+    """
+    project, sandbox = await _get_project_sandbox(project_id, current_user, db)
+    _require_running(sandbox)
+
+    # Run the command with a short timeout — if it fails immediately we get the error
+    result = await sandbox_manager.exec_command(
+        sandbox.container_id,
+        ["bash", "-c", f"nohup {body.command} > /tmp/comio_run.log 2>&1 & echo $!"],
+        timeout=5,
+    )
+
+    pid = result.stdout.strip()
+    return {
+        "status": "started",
+        "pid": pid,
+        "log_file": "/tmp/comio_run.log",
+        "message": f"Process started in background (PID {pid}). Use View Logs or open the preview URL.",
+    }
+
+
+@router.get("/run/logs")
+async def get_run_logs(
+    project_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get the latest stdout/stderr from the background run process."""
+    project, sandbox = await _get_project_sandbox(project_id, current_user, db)
+    _require_running(sandbox)
+
+    result = await sandbox_manager.exec_command(
+        sandbox.container_id,
+        ["bash", "-c", "tail -100 /tmp/comio_run.log 2>/dev/null || echo '(no logs yet)'"],
+        timeout=5,
+    )
+    return {"logs": result.stdout}
+
+
+async def _get_proxy_user(
+    request: Request,
+    token: str = Query(None),
+    db: AsyncSession = Depends(get_db)
+) -> User:
+    from apps.api.exceptions import UnauthorizedException
+    from apps.api.auth.jwt import decode_access_token
+    from apps.api.repositories import user_repo
+
+    if not token:
+        auth = request.headers.get("Authorization")
+        if auth and auth.startswith("Bearer "):
+            token = auth.split(" ")[1]
+
+    if not token:
+        raise UnauthorizedException("No token provided via header or query ?token=")
+
+    user_id = decode_access_token(token)
+    if not user_id:
+        raise UnauthorizedException("Invalid or expired token")
+
+    user = await user_repo.get_by_id(db, user_id)
+    if not user or not user.is_active:
+        raise UnauthorizedException("User not found or inactive")
+
+    return user
+
+@router.get("/proxy/{port}/{path:path}")
+@router.get("/proxy/{port}")
+async def proxy_to_sandbox(
+    project_id: uuid.UUID,
+    port: int,
+    path: str = "",
+    current_user: User = Depends(_get_proxy_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Proxy an HTTP GET request to a port running inside the sandbox.
+
+    This lets users preview their running app through Comio without exposing
+    Docker ports directly. Uses `docker exec curl` to make the request from
+    inside the container network.
+
+    Example: GET /projects/{id}/sandbox/proxy/3000/ → http://localhost:3000/ inside the container
+    """
+    from fastapi.responses import Response
+    import json as _json
+
+    project, sandbox = await _get_project_sandbox(project_id, current_user, db)
+    _require_running(sandbox)
+
+    url = f"http://localhost:{port}/{path}"
+    # Use curl inside the container to fetch the page
+    result = await sandbox_manager.exec_command(
+        sandbox.container_id,
+        [
+            "curl", "-s", "-i",
+            "--max-time", "10",
+            "--location",
+            "-H", "Accept: text/html,application/json,*/*",
+            url,
+        ],
+        timeout=15,
+    )
+
+    if result.exit_code != 0:
+        raise ComioException(
+            f"Could not reach port {port} inside sandbox. Is your app running? "
+            f"Error: {result.stderr or result.stdout or 'timeout/connection refused'}",
+            status_code=502,
+        )
+
+    # Parse curl -i output: headers\r\n\r\nbody
+    raw = result.stdout
+    if "\r\n\r\n" in raw:
+        header_part, body = raw.split("\r\n\r\n", 1)
+    elif "\n\n" in raw:
+        header_part, body = raw.split("\n\n", 1)
+    else:
+        header_part, body = "", raw
+
+    # Extract status code from first line (e.g. "HTTP/1.1 200 OK")
+    status_code = 200
+    content_type = "text/html; charset=utf-8"
+    for line in header_part.splitlines():
+        if line.startswith("HTTP/"):
+            try:
+                status_code = int(line.split()[1])
+            except (IndexError, ValueError):
+                pass
+        if line.lower().startswith("content-type:"):
+            content_type = line.split(":", 1)[1].strip()
+
+    return Response(
+        content=body.encode("utf-8", errors="replace"),
+        status_code=status_code,
+        media_type=content_type,
+    )

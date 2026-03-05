@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from apps.api.config import settings
 from apps.api.models.chat import ChatSession, ChatMessage, MessageRole
 from apps.api.models.sandbox import Sandbox
+from apps.api.models.user import User
 from apps.api.repositories.chat import chat_session_repo, chat_message_repo
 
 # Lazy imports to avoid circular dependencies at module level
@@ -89,6 +90,7 @@ class ChatService:
         db: AsyncSession,
         session: ChatSession,
         sandbox: Sandbox,
+        user: User,
         user_message: str,
         project_name: str = "project",
         project_description: str | None = None,
@@ -118,8 +120,11 @@ class ChatService:
         # We exclude the last message (the one we just added) because
         # the agent adds it separately as the current user_message
 
-        # Step 3: Create agent with LLM adapter
-        agent = self._create_agent()
+        # Step 3: Create agent with LLM adapter, using per-user LLM settings when available
+        agent = self._create_agent(
+            provider_override=user.llm_provider,
+            api_key_override=user.llm_api_key,
+        )
         
 
         # Step 4: Run the ReAct loop
@@ -175,7 +180,11 @@ class ChatService:
 
     # ── Private Helpers ───────────────────────────────
 
-    def _create_agent(self):
+    def _create_agent(
+        self,
+        provider_override: str | None = None,
+        api_key_override: str | None = None,
+    ):
         """Create a SandboxChatAgent with the configured LLM adapter.
 
         Uses lazy imports to avoid circular dependencies.
@@ -186,10 +195,11 @@ class ChatService:
         from apps.api.services.file_ops_service import file_ops
         from apps.api.services.sandbox_manager import sandbox_manager
 
-        # Create the LLM adapter from settings
+        # Create the LLM adapter from settings, optionally overridden per request
+        provider = provider_override or settings.default_llm_provider
         llm_adapter = AdapterFactory.create(
-            provider=settings.default_llm_provider,
-            api_key=self._get_api_key(),
+            provider=provider,
+            api_key=self._get_api_key(provider=provider, override=api_key_override),
             model=settings.default_llm_model,
         )
 
@@ -199,13 +209,21 @@ class ChatService:
             sandbox_manager=sandbox_manager,
         )
 
-    def _get_api_key(self) -> str:
-        """Get the API key for the configured LLM provider."""
-        provider = settings.default_llm_provider
+    def _get_api_key(self, provider: str | None = None, override: str | None = None) -> str:
+        """Get the API key for the configured LLM provider.
+
+        Enforces that users must provide their own API key via Settings.
+        No longer falls back to global .env keys.
+        """
+        provider = provider or settings.default_llm_provider
+
+        if override:
+            return override
+
         if provider == "openai":
-            return settings.openai_api_key
+            raise ValueError("OpenAI API key is missing. Please set your LLM API Key in Settings.")
         elif provider == "anthropic":
-            return settings.anthropic_api_key
+            raise ValueError("Anthropic API key is missing. Please set your LLM API Key in Settings.")
         else:
             return ""  # Ollama doesn't need an API key
 
