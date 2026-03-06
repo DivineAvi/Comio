@@ -1,4 +1,4 @@
- "use client";
+"use client";
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
@@ -31,8 +31,11 @@ export default function LoginPage() {
       if (typeof window !== "undefined") {
         window.localStorage.setItem("comio_token", result.access_token);
         window.localStorage.setItem("comio_user", JSON.stringify(result.user));
+        // Force a full page reload so the Header and Sidebar pick up the new localStorage state
+        window.location.href = "/dashboard";
+      } else {
+        router.push("/dashboard");
       }
-      router.push("/dashboard");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed");
     } finally {
@@ -99,8 +102,8 @@ export default function LoginPage() {
                   ? "Signing in..."
                   : "Creating account..."
                 : mode === "login"
-                ? "Sign In"
-                : "Sign Up"}
+                  ? "Sign In"
+                  : "Sign Up"}
             </Button>
           </form>
 
