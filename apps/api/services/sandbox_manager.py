@@ -267,6 +267,28 @@ class SandboxManager:
             timeout=60,
         )
 
+    async def get_container_ip(self, container_id: str, network_name: str | None = None) -> str | None:
+        """Get the container's IP address on the sandbox network.
+
+        Returns the IP address string (e.g. '172.18.0.3') or None if unavailable.
+        """
+        try:
+            container = await asyncio.to_thread(
+                self._client.containers.get, container_id
+            )
+            nets = container.attrs.get("NetworkSettings", {}).get("Networks", {})
+            # Try the sandbox-specific network first, then fall back to any available
+            if network_name and network_name in nets:
+                return nets[network_name].get("IPAddress") or None
+            # Return first available IP
+            for net_info in nets.values():
+                ip = net_info.get("IPAddress")
+                if ip:
+                    return ip
+            return None
+        except NotFound:
+            return None
+
     # ── Private helpers — blocking Docker calls ───────
 
     def _create_container(self, volume_name: str, container_name: str):

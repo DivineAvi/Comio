@@ -1,8 +1,11 @@
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.responses import RedirectResponse
+import re
+from urllib.parse import urlparse, parse_qs
 
 from apps.api.config import settings
 from apps.api.exceptions import ComioException, comio_exception_handler
@@ -106,6 +109,37 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
     application.add_middleware(RequestIDMiddleware) # Add request ID middleware to every request
+    
+    @application.middleware("http")
+    async def sandbox_proxy_fallback_middleware(request: Request, call_next):
+        response = await call_next(request)
+        if response.status_code == 404:
+            referer = request.headers.get("referer")
+            if referer:
+                parsed_referer = urlparse(referer)
+                match = re.search(r'(/projects/[^/]+/sandbox/proxy/\d+)', parsed_referer.path)
+                if match:
+                    proxy_base = match.group(1)
+                    if not request.url.path.startswith("/projects/"):
+                        qs = parse_qs(parsed_referer.query)
+                        token = qs.get("token", [""])[0] if "token" in qs else ""
+                        
+                        # Build redirect URL, preserving the original query string
+                        redirect_url = f"{proxy_base}{request.url.path}"
+                        
+                        redirect_qs = request.url.query
+                        if token:
+                            if redirect_qs:
+                                redirect_qs += f"&token={token}"
+                            else:
+                                redirect_qs = f"token={token}"
+                                
+                        if redirect_qs:
+                            redirect_url += f"?{redirect_qs}"
+                            
+                        return RedirectResponse(url=redirect_url, status_code=302)
+        return response
+
     # --- Exception Handlers ---
     application.add_exception_handler(ComioException, comio_exception_handler)
 

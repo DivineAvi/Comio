@@ -1,4 +1,4 @@
- "use client";
+"use client";
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
@@ -37,6 +37,7 @@ export default function IncidentsPage() {
       return;
     }
     async function loadIncidents() {
+      if (!selectedProjectId) return;
       try {
         setLoading(true);
         setError(null);

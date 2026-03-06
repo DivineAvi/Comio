@@ -1,4 +1,4 @@
-const API_BASE_URL =
+export const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 
 type HttpMethod = "GET" | "POST" | "PUT" | "DELETE";
@@ -317,6 +317,47 @@ export async function runSandboxProcess(
   return request(`/projects/${projectId}/sandbox/run`, {
     method: "POST",
     body: { command },
+  });
+}
+
+export interface ExecCommandResponse {
+  exit_code: number;
+  stdout: string;
+  stderr: string;
+}
+
+export async function execSandboxCommand(
+  projectId: string,
+  command: string,
+  timeout?: number
+): Promise<ExecCommandResponse> {
+  return request<ExecCommandResponse, { command: string; timeout?: number }>(
+    `/projects/${projectId}/sandbox/exec`,
+    {
+      method: "POST",
+      body: { command, timeout },
+    }
+  );
+}
+
+export interface RunningPort {
+  port: number;
+  pid: number | null;
+  command: string;
+}
+
+export async function listRunningPorts(
+  projectId: string
+): Promise<{ ports: RunningPort[] }> {
+  return request(`/projects/${projectId}/sandbox/run/ports`);
+}
+
+export async function killPort(
+  projectId: string,
+  port: number
+): Promise<{ status: string; port: number; output: string }> {
+  return request(`/projects/${projectId}/sandbox/run/ports/${port}`, {
+    method: "DELETE",
   });
 }
 

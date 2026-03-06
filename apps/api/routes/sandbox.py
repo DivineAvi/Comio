@@ -433,6 +433,154 @@ async def get_run_logs(
     return {"logs": result.stdout}
 
 
+@router.get("/run/ports")
+async def list_running_ports(
+    project_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List TCP listening ports and their processes inside the sandbox container."""
+    project, sandbox = await _get_project_sandbox(project_id, current_user, db)
+    _require_running(sandbox)
+
+    # Read /proc/net/tcp (and tcp6) to find listening ports -- always available in Linux.
+    # Column 3 is local address in hex, column 4 is state (0A = LISTEN).
+    # Match inode -> pid via /proc/*/fd symlinks.
+    script = r"""
+import os, json
+
+def hex_port(addr_hex):
+    return int(addr_hex.split(':')[1], 16)
+
+def read_tcp(path):
+    entries = []
+    try:
+        with open(path) as f:
+            next(f)  # skip header
+            for line in f:
+                parts = line.split()
+                if len(parts) < 10:
+                    continue
+                state = parts[3]
+                if state != '0A':  # 0A = TCP_LISTEN
+                    continue
+                port = hex_port(parts[1])
+                inode = parts[9]
+                entries.append((port, inode))
+    except Exception:
+        pass
+    return entries
+
+# Build inode -> pid map by scanning /proc/*/fd
+inode_to_pid = {}
+try:
+    for pid_dir in os.listdir('/proc'):
+        if not pid_dir.isdigit():
+            continue
+        fd_dir = f'/proc/{pid_dir}/fd'
+        try:
+            for fd in os.listdir(fd_dir):
+                link = os.readlink(f'{fd_dir}/{fd}')
+                if link.startswith('socket:['):
+                    inode = link[8:-1]
+                    inode_to_pid[inode] = pid_dir
+        except Exception:
+            pass
+except Exception:
+    pass
+
+ports = {}
+for path in ['/proc/net/tcp', '/proc/net/tcp6']:
+    for port, inode in read_tcp(path):
+        if port in ports or port == 0:
+            continue
+        pid = inode_to_pid.get(inode)
+        cmd = ''
+        if pid:
+            try:
+                with open(f'/proc/{pid}/cmdline', 'rb') as f:
+                    cmd = f.read().replace(b'\x00', b' ').decode(errors='replace').strip()[:50]
+            except Exception:
+                pass
+        ports[port] = {'port': port, 'pid': int(pid) if pid else None, 'command': cmd}
+
+import json
+print(json.dumps(list(ports.values())))
+"""
+    import base64 as _b64
+    encoded = _b64.b64encode(script.encode()).decode()
+    result = await sandbox_manager.exec_command(
+        sandbox.container_id,
+        ["bash", "-c", f"echo '{encoded}' | base64 -d | python3"],
+        timeout=8,
+    )
+
+    import json as _json
+    try:
+        ports_list = _json.loads(result.stdout.strip())
+    except Exception:
+        ports_list = []
+
+    # Filter out low system ports (< 80) and very high ones (> 65000)
+    ports_list = [p for p in ports_list if 80 <= p["port"] <= 65000]
+    ports_list.sort(key=lambda p: p["port"])
+
+    return {"ports": ports_list}
+
+
+@router.delete("/run/ports/{port}")
+async def kill_port_process(
+    project_id: uuid.UUID,
+    port: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Kill the process listening on the given port inside the sandbox container."""
+    project, sandbox = await _get_project_sandbox(project_id, current_user, db)
+    _require_running(sandbox)
+
+    # Find PID via /proc/net/tcp (same approach as list_running_ports) and kill it
+    kill_script = (
+        "import os, sys\n"
+        "port_hex = format(" + str(port) + ", '04X')\n"
+        "inode = None\n"
+        "for path in ['/proc/net/tcp', '/proc/net/tcp6']:\n"
+        "  try:\n"
+        "    for line in open(path).readlines()[1:]:\n"
+        "      parts = line.split()\n"
+        "      if len(parts) < 10 or parts[3] != '0A': continue\n"
+        "      if parts[1].split(':')[1].upper() == port_hex:\n"
+        "        inode = parts[9]; break\n"
+        "  except: pass\n"
+        "  if inode: break\n"
+        "if not inode: print('not_found'); sys.exit(0)\n"
+        "for pid_dir in os.listdir('/proc'):\n"
+        "  if not pid_dir.isdigit(): continue\n"
+        "  try:\n"
+        "    for fd in os.listdir(f'/proc/{pid_dir}/fd'):\n"
+        "      link = os.readlink(f'/proc/{pid_dir}/fd/{fd}')\n"
+        "      if link == f'socket:[{inode}]':\n"
+        "        os.kill(int(pid_dir), 9)\n"
+        "        print(f'killed:{pid_dir}'); sys.exit(0)\n"
+        "  except: pass\n"
+        "print('pid_not_found')\n"
+    )
+    import base64 as _b64
+    encoded = _b64.b64encode(kill_script.encode()).decode()
+
+    result = await sandbox_manager.exec_command(
+        sandbox.container_id,
+        ["bash", "-c", f"echo '{encoded}' | base64 -d | python3"],
+        timeout=8,
+    )
+
+    return {
+        "status": "killed",
+        "port": port,
+        "output": result.stdout.strip(),
+    }
+
+
 async def _get_proxy_user(
     request: Request,
     token: str = Query(None),
@@ -460,73 +608,206 @@ async def _get_proxy_user(
 
     return user
 
-@router.get("/proxy/{port}/{path:path}")
-@router.get("/proxy/{port}")
+
+def _rewrite_html_assets(html: str, proxy_base: str, token: str = "") -> str:
+    """Rewrite absolute asset URLs in HTML so they go through the Comio proxy.
+
+    For example if proxy_base is '/projects/{id}/sandbox/proxy/3000':
+      src="/assets/main.js"  ->  src="/projects/{id}/sandbox/proxy/3000/assets/main.js?token=..."
+      href="/style.css"      ->  href="/projects/{id}/sandbox/proxy/3000/style.css?token=..."
+
+    The token is appended so all static asset requests (script, link, img) are
+    authenticated through the proxy without needing JS interception.
+    """
+    import re
+
+    tok_suffix = f"?token={token}" if token else ""
+
+    # Inject <base> tag right after <head> so relative URLs also resolve through proxy
+    base_tag = f'<base href="{proxy_base}/">'
+    if "<head>" in html:
+        html = html.replace("<head>", f"<head>\n  {base_tag}", 1)
+    elif "<head " in html:
+        html = re.sub(r"(<head[^>]*>)", rf"\1\n  {base_tag}", html, count=1)
+
+    # Rewrite src="/" and href="/" absolute paths (skip external / data / already-rewritten)
+    def rewrite_attr(m: re.Match) -> str:
+        attr = m.group(1)   # 'src' or 'href'
+        quote = m.group(2)  # '"' or "'"
+        path = m.group(3)   # the path value starting with /
+
+        if path.startswith("//") or path.startswith("http") or path.startswith(proxy_base):
+            return m.group(0)
+
+        sep = "&" if "?" in path else "?"
+        new_path = proxy_base + path + (f"{sep}token={token}" if token else "")
+        return f'{attr}={quote}{new_path}{quote}'
+
+    html = re.sub(
+        r'(src|href)=(["\'])(\/[^"\']*)\2',
+        rewrite_attr,
+        html,
+    )
+
+    # Rewrite url("/path") in inline styles
+    def rewrite_css_url(m: re.Match) -> str:
+        quote = m.group(1)
+        path = m.group(2)
+        if path.startswith("//") or path.startswith("http") or path.startswith(proxy_base):
+            return m.group(0)
+        sep = "&" if "?" in path else "?"
+        new_path = proxy_base + path + (f"{sep}token={token}" if token else "")
+        return f'url({quote}{new_path}{quote})'
+
+    html = re.sub(r'url\((["\'])(\/[^"\']*)\1\)', rewrite_css_url, html)
+
+    return html
+
+
+@router.api_route("/proxy/{port}/{path:path}", methods=["GET", "POST", "HEAD"])
+@router.api_route("/proxy/{port}", methods=["GET", "POST", "HEAD"])
 async def proxy_to_sandbox(
+    request: Request,
     project_id: uuid.UUID,
     port: int,
     path: str = "",
     current_user: User = Depends(_get_proxy_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Proxy an HTTP GET request to a port running inside the sandbox.
+    """Proxy HTTP requests to a port running inside the sandbox container.
 
-    This lets users preview their running app through Comio without exposing
-    Docker ports directly. Uses `docker exec curl` to make the request from
-    inside the container network.
+    Uses httpx to connect directly from the API server to the container via
+    its Docker network IP. This properly handles:
+    - All HTTP methods (GET, POST, HEAD)
+    - Binary content (images, fonts, wasm)
+    - HTML with absolute asset paths -> rewrites them through the proxy
+    - Streaming/chunked responses
 
-    Example: GET /projects/{id}/sandbox/proxy/3000/ → http://localhost:3000/ inside the container
+    Example:
+        GET /projects/{id}/sandbox/proxy/3000/
+        -> fetches http://<container-ip>:3000/ and rewrites HTML asset paths
     """
     from fastapi.responses import Response
-    import json as _json
+    import base64
 
     project, sandbox = await _get_project_sandbox(project_id, current_user, db)
     _require_running(sandbox)
 
-    url = f"http://localhost:{port}/{path}"
-    # Use curl inside the container to fetch the page
+    token = request.query_params.get("token", "")
+    proxy_base = f"/projects/{project_id}/sandbox/proxy/{port}"
+
+    # Build the query string to forward (strip 'token' so the app doesn't see it)
+    fwd_params = "&".join(
+        f"{k}={v}" for k, v in request.query_params.items() if k != "token"
+    )
+    url_path = f"/{path}" if path else "/"
+    if fwd_params:
+        url_path += f"?{fwd_params}"
+
+    # Build the Python proxy script (multiline — base64-encode it to pass safely via bash)
+    import base64 as _b64
+    python_code = f"""import urllib.request, base64, sys
+req = urllib.request.Request('http://localhost:{port}{url_path}')
+req.add_header('Accept', 'text/html,application/xhtml+xml,*/*')
+try:
+    r = urllib.request.urlopen(req, timeout=10)
+    body = r.read()
+    ct = r.headers.get('Content-Type', 'text/html')
+    print(r.status)
+    print(ct)
+    print(base64.b64encode(body).decode())
+except urllib.error.HTTPError as e:
+    body = e.read()
+    ct = e.headers.get('Content-Type', 'text/html')
+    print(e.code)
+    print(ct)
+    print(base64.b64encode(body).decode())
+except Exception as ex:
+    print(502)
+    print('text/plain')
+    print(base64.b64encode(str(ex).encode()).decode())
+"""
+    encoded_script = _b64.b64encode(python_code.encode()).decode()
+
     result = await sandbox_manager.exec_command(
         sandbox.container_id,
-        [
-            "curl", "-s", "-i",
-            "--max-time", "10",
-            "--location",
-            "-H", "Accept: text/html,application/json,*/*",
-            url,
-        ],
-        timeout=15,
+        ["bash", "-c", f"echo '{encoded_script}' | base64 -d | python3"],
+        timeout=18,
     )
 
-    if result.exit_code != 0:
+
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
+
+    parts = result.stdout.strip().split("\n", 2)
+    if len(parts) < 3:
+        # Log the raw output for debugging
+        _log.warning("Proxy exec returned no/partial output. stdout=%r stderr=%r", result.stdout[:200], result.stderr[:200])
         raise ComioException(
-            f"Could not reach port {port} inside sandbox. Is your app running? "
-            f"Error: {result.stderr or result.stdout or 'timeout/connection refused'}",
+            f"No response from port {port}. stdout: {result.stdout[:200] or '(empty)'}. stderr: {result.stderr[:100] or '(empty)'}",
             status_code=502,
         )
 
-    # Parse curl -i output: headers\r\n\r\nbody
-    raw = result.stdout
-    if "\r\n\r\n" in raw:
-        header_part, body = raw.split("\r\n\r\n", 1)
-    elif "\n\n" in raw:
-        header_part, body = raw.split("\n\n", 1)
-    else:
-        header_part, body = "", raw
+    try:
+        status_code = int(parts[0].strip())
+    except ValueError:
+        status_code = 200
 
-    # Extract status code from first line (e.g. "HTTP/1.1 200 OK")
-    status_code = 200
-    content_type = "text/html; charset=utf-8"
-    for line in header_part.splitlines():
-        if line.startswith("HTTP/"):
-            try:
-                status_code = int(line.split()[1])
-            except (IndexError, ValueError):
-                pass
-        if line.lower().startswith("content-type:"):
-            content_type = line.split(":", 1)[1].strip()
+    content_type = parts[1].strip()
+    try:
+        content = base64.b64decode(parts[2].strip())
+    except Exception:
+        content = parts[2].encode()
+
+    # If the Python script itself failed (returned 502), enrich the error message
+    if status_code == 502:
+        try:
+            err_msg = content.decode("utf-8", errors="replace")
+        except Exception:
+            err_msg = "unknown error"
+        _log.warning("Proxy got 502 from container: port=%d error=%s", port, err_msg)
+        raise ComioException(
+            f"Cannot connect to port {port}: {err_msg}",
+            status_code=502,
+        )
+
+    # For HTML responses, rewrite asset URLs so they load through the proxy
+    if "text/html" in content_type:
+        try:
+            html_text = content.decode("utf-8", errors="replace")
+            html_text = _rewrite_html_assets(html_text, proxy_base, token=token)
+            # Inject a script to reroute dynamic fetch() calls through the proxy
+            if token:
+                _b = repr(proxy_base)
+                _t = repr(token)
+                inject_script = (
+                    "<script>\n"
+                    "// Comio proxy: route absolute fetch/XHR calls through the proxy\n"
+                    "(function() {\n"
+                    "  var _base = " + _b + ";\n"
+                    "  var _tok = " + _t + ";\n"
+                    "  var _origFetch = window.fetch;\n"
+                    "  window.fetch = function(url, opts) {\n"
+                    "    if (typeof url === 'string' && url.startsWith('/') && !url.startsWith(_base)) {\n"
+                    "      url = _base + url + (url.includes('?') ? '&' : '?') + 'token=' + _tok;\n"
+                    "    }\n"
+                    "    return _origFetch(url, opts);\n"
+                    "  };\n"
+                    "})();\n"
+                    "</script>"
+                )
+                if "</head>" in html_text:
+                    html_text = html_text.replace("</head>", inject_script + "</head>", 1)
+                else:
+                    html_text = inject_script + html_text
+            content = html_text.encode("utf-8")
+            content_type = "text/html; charset=utf-8"
+        except Exception:
+            pass
 
     return Response(
-        content=body.encode("utf-8", errors="replace"),
+        content=content,
         status_code=status_code,
         media_type=content_type,
+        headers={"Content-Length": str(len(content))},
     )

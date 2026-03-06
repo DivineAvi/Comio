@@ -40,7 +40,12 @@ import {
   startSandbox,
   stopSandbox,
   runSandboxProcess,
+  listRunningPorts,
+  killPort,
   deleteChatSession,
+  execSandboxCommand,
+  API_BASE_URL,
+  type RunningPort,
 } from "@/lib/api";
 
 type SandboxStatusType = "running" | "stopped" | "creating" | "error" | "none" | string;
@@ -211,6 +216,16 @@ export default function SandboxPage({ params }: SandboxPageProps) {
   const [runPort, setRunPort] = useState("8000");
   const [previewRunning, setPreviewRunning] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [previewStarted, setPreviewStarted] = useState(false);
+  const [previewAttempt, setPreviewAttempt] = useState(0);
+  const [previewTab, setPreviewTab] = useState<"preview" | "logs" | "ports">("ports");
+  const [processLogs, setProcessLogs] = useState<string>("");
+  const [logsLoading, setLogsLoading] = useState(false);
+  const [logsCommandInput, setLogsCommandInput] = useState("");
+  const [logsCommandRunning, setLogsCommandRunning] = useState(false);
+  const [runningPorts, setRunningPorts] = useState<RunningPort[]>([]);
+  const [portsLoading, setPortsLoading] = useState(false);
+  const [killingPort, setKillingPort] = useState<number | null>(null);
 
   useEffect(() => {
     if (messagesEndRef.current) {
@@ -289,6 +304,22 @@ export default function SandboxPage({ params }: SandboxPageProps) {
       setFileTree(null);
     }
   }, [files]);
+
+  // Auto-fetch ports whenever the preview overlay opens, and poll every 3s
+  useEffect(() => {
+    if (!previewOpen) return;
+
+    const fetchPorts = async () => {
+      try {
+        const data = await listRunningPorts(id);
+        setRunningPorts(data.ports);
+      } catch { /* ignore */ }
+    };
+
+    fetchPorts(); // immediate on open
+    const interval = setInterval(fetchPorts, 3000);
+    return () => clearInterval(interval);
+  }, [previewOpen, id]);
 
   const canChat = sandboxStatus === "running" && !!activeSessionId;
 
@@ -483,18 +514,81 @@ export default function SandboxPage({ params }: SandboxPageProps) {
 
   async function handleRunPreview() {
     if (!runCommand || !runPort) return;
+    const token = window.localStorage.getItem("comio_token") || "";
+    const proxyPath = `/projects/${id}/sandbox/proxy/${runPort}/?token=${token}`;
+
     try {
       setPreviewRunning(true);
+      setPreviewAttempt(0);
+      setPreviewStarted(true); // immediately switch to tabs view
+      setPreviewTab("ports");   // show ports tab so user sees progress
       await runSandboxProcess(id, runCommand);
-      // Give it a couple seconds to start up before showing iframe
-      setTimeout(() => {
-        const token = window.localStorage.getItem("comio_token") || "";
-        setPreviewUrl(`/projects/${id}/sandbox/proxy/${runPort}/?token=${token}`);
-        setPreviewRunning(false);
-      }, 3000);
+
+      // Poll until the app is accepting connections (up to 30s)
+      const MAX_ATTEMPTS = 30;
+      const POLL_INTERVAL_MS = 800;
+      let attempt = 0;
+
+      const poll = async (): Promise<void> => {
+        attempt++;
+        setPreviewAttempt(attempt);
+
+        try {
+          const checkUrl = `${API_BASE_URL}${proxyPath}`;
+          const res = await fetch(checkUrl, { method: "GET", credentials: "omit" });
+          if (res.ok || res.status === 304) {
+            // App is up — switch to preview iframe
+            setPreviewUrl(proxyPath);
+            setPreviewTab("preview");
+            setPreviewRunning(false);
+            return;
+          }
+        } catch {
+          // Connection refused / network error — app not up yet
+        }
+
+        if (attempt < MAX_ATTEMPTS) {
+          await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+          return poll();
+        } else {
+          // Give up — show preview anyway
+          setPreviewUrl(proxyPath);
+          setPreviewTab("preview");
+          setPreviewRunning(false);
+        }
+      };
+
+      // Give the process a very short head-start before first poll
+      await new Promise((r) => setTimeout(r, 500));
+      await poll();
     } catch (e) {
       alert(e instanceof Error ? e.message : "Failed to run project");
       setPreviewRunning(false);
+    }
+  }
+
+  async function handleRunLogsCommand() {
+    if (!logsCommandInput.trim() || logsCommandRunning) return;
+    const cmd = logsCommandInput.trim();
+    setLogsCommandInput("");
+    setLogsCommandRunning(true);
+
+    // Append the command to the logs view immediately
+    setProcessLogs((prev) => prev ? `${prev}\n\n$ ${cmd}\n` : `$ ${cmd}\n`);
+
+    try {
+      const res = await execSandboxCommand(id, cmd);
+      setProcessLogs((prev) => {
+        let output = prev;
+        if (res.stdout) output += res.stdout;
+        if (res.stderr) output += `\n[stderr] ${res.stderr}`;
+        if (!res.stdout && !res.stderr) output += `[exit code ${res.exit_code}]`;
+        return output;
+      });
+    } catch (e) {
+      setProcessLogs((prev) => `${prev}\nError executing command: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setLogsCommandRunning(false);
     }
   }
 
@@ -1014,13 +1108,16 @@ export default function SandboxPage({ params }: SandboxPageProps) {
                 onClick={() => {
                   setPreviewOpen(false);
                   setPreviewUrl(null);
+                  setPreviewStarted(false);
+                  setPreviewRunning(false);
                 }}
+
               >
                 <X className="h-4 w-4" />
               </Button>
             </div>
 
-            {!previewUrl ? (
+            {!previewStarted ? (
               <div className="flex-1 flex flex-col items-center justify-center p-6 space-y-6">
                 <div className="max-w-md w-full space-y-4">
                   <div className="space-y-2">
@@ -1047,7 +1144,9 @@ export default function SandboxPage({ params }: SandboxPageProps) {
                     {previewRunning ? (
                       <>
                         <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                        Starting and linking...
+                        {previewAttempt > 0
+                          ? `Waiting for app... (${previewAttempt}/30)`
+                          : "Starting process..."}
                       </>
                     ) : (
                       <>
@@ -1060,15 +1159,274 @@ export default function SandboxPage({ params }: SandboxPageProps) {
                     This runs the command in the background and proxies requests to the specified port.
                   </p>
                 </div>
+
+                {/* Already-running ports — shown directly on the form screen */}
+                {runningPorts.length > 0 && (
+                  <div className="max-w-md w-full space-y-2">
+                    <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Running Ports</p>
+                    <div className="rounded-md border divide-y">
+                      {runningPorts.map((p) => (
+                        <div key={p.port} className="flex items-center justify-between px-3 py-2 text-sm">
+                          <div className="flex items-center gap-2">
+                            <span className="h-2 w-2 rounded-full bg-emerald-500 inline-block" />
+                            <span className="font-mono font-semibold">:{p.port}</span>
+                            {p.command && (
+                              <span className="text-xs text-muted-foreground truncate max-w-[120px]">{p.command}</span>
+                            )}
+                          </div>
+                          <div className="flex gap-1">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-6 text-xs px-2"
+                              onClick={() => {
+                                const token = window.localStorage.getItem("comio_token") || "";
+                                setPreviewUrl(`/projects/${id}/sandbox/proxy/${p.port}/?token=${token}`);
+                                setPreviewStarted(true);
+                                setPreviewTab("preview");
+                              }}
+                            >
+                              Preview
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-6 text-xs px-2 text-destructive hover:text-destructive"
+                              disabled={killingPort === p.port}
+                              onClick={async () => {
+                                setKillingPort(p.port);
+                                try {
+                                  await killPort(id, p.port);
+                                  setRunningPorts((prev) => prev.filter((x) => x.port !== p.port));
+                                } catch { /* ignore */ } finally {
+                                  setKillingPort(null);
+                                }
+                              }}
+                            >
+                              {killingPort === p.port ? <Loader2 className="h-3 w-3 animate-spin" /> : "✕"}
+                            </Button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             ) : (
-              <div className="flex-1 min-h-0 relative bg-white">
-                <iframe
-                  src={`http://localhost:8000${previewUrl}`}
-                  className="w-full h-full border-none"
-                  title="App Preview"
-                  sandbox="allow-scripts allow-forms allow-popups allow-same-origin"
-                />
+              <div className="flex-1 min-h-0 flex flex-col">
+                {/* Tab bar */}
+                <div className="flex border-b bg-muted/30 flex-shrink-0">
+                  {(["ports", "preview", "logs"] as const).map((tab) => (
+                    <button
+                      key={tab}
+                      onClick={async () => {
+                        setPreviewTab(tab);
+                        if (tab === "ports") {
+                          setPortsLoading(true);
+                          try {
+                            const data = await listRunningPorts(id);
+                            setRunningPorts(data.ports);
+                          } catch { /* ignore */ } finally {
+                            setPortsLoading(false);
+                          }
+                        } else if (tab === "logs") {
+                          setLogsLoading(true);
+                          try {
+                            const token = window.localStorage.getItem("comio_token") || "";
+                            const res = await fetch(
+                              `${API_BASE_URL}/projects/${id}/sandbox/run/logs`,
+                              { headers: { Authorization: `Bearer ${token}` } }
+                            );
+                            const data = await res.json();
+                            setProcessLogs(data.logs || data.stdout || JSON.stringify(data, null, 2));
+                          } catch (e) {
+                            setProcessLogs("Failed to load logs: " + String(e));
+                          } finally {
+                            setLogsLoading(false);
+                          }
+                        }
+                      }}
+                      className={`px-4 py-2 text-sm font-medium border-b-2 capitalize transition-colors ${previewTab === tab
+                        ? "border-primary text-primary"
+                        : "border-transparent text-muted-foreground hover:text-foreground"
+                        }`}
+                    >
+                      {tab === "ports" ? "🔌 Ports" : tab === "preview" ? "Preview" : "Logs"}
+                    </button>
+                  ))}
+                  <div className="ml-auto flex items-center gap-1 px-2">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={async () => {
+                        setPortsLoading(true);
+                        try {
+                          const data = await listRunningPorts(id);
+                          setRunningPorts(data.ports);
+                          setPreviewTab("ports");
+                        } catch { /* ignore */ } finally {
+                          setPortsLoading(false);
+                        }
+                      }}
+                      className="text-xs h-7 px-2"
+                      title="Refresh ports"
+                    >
+                      {portsLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : "↻"}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        setPreviewUrl(null);
+                        setPreviewStarted(false);
+                        setPreviewRunning(false);
+                        setPreviewTab("ports");
+                      }}
+                      className="text-xs h-7 px-2"
+                    >
+                      + Run App
+                    </Button>
+                  </div>
+                </div>
+
+                {/* Ports tab */}
+                {previewTab === "ports" && (
+                  <div className="flex-1 min-h-0 overflow-auto p-4">
+                    {portsLoading ? (
+                      <div className="flex items-center gap-2 text-muted-foreground text-sm">
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        Scanning ports...
+                      </div>
+                    ) : runningPorts.length === 0 ? (
+                      <div className="text-center text-muted-foreground py-12">
+                        <p className="text-sm font-medium mb-1">No running ports detected</p>
+                        <p className="text-xs">Start a dev server using &quot;+ Run App&quot; and then refresh.</p>
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        {runningPorts.map((p) => {
+                          const token = window.localStorage.getItem("comio_token") || "";
+                          return (
+                            <div
+                              key={p.port}
+                              className="flex items-center justify-between p-3 rounded-lg border bg-card hover:bg-muted/30 transition-colors"
+                            >
+                              <div className="flex items-center gap-3">
+                                <div className="h-2 w-2 rounded-full bg-green-500 flex-shrink-0" />
+                                <div>
+                                  <div className="text-sm font-mono font-semibold">
+                                    :{p.port}
+                                  </div>
+                                  <div className="text-xs text-muted-foreground">
+                                    {p.command || "unknown"}{p.pid ? ` · PID ${p.pid}` : ""}
+                                  </div>
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="h-7 text-xs"
+                                  onClick={() => {
+                                    setPreviewUrl(`/projects/${id}/sandbox/proxy/${p.port}/?token=${token}`);
+                                    setPreviewTab("preview");
+                                  }}
+                                >
+                                  <ExternalLink className="h-3 w-3 mr-1" />
+                                  Preview
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  className="h-7 text-xs text-destructive hover:text-destructive hover:bg-destructive/10"
+                                  disabled={killingPort === p.port}
+                                  onClick={async () => {
+                                    setKillingPort(p.port);
+                                    try {
+                                      await killPort(id, p.port);
+                                      const data = await listRunningPorts(id);
+                                      setRunningPorts(data.ports);
+                                      if (previewUrl?.includes(`/proxy/${p.port}/`)) {
+                                        setPreviewUrl(null);
+                                      }
+                                    } catch { /* ignore */ } finally {
+                                      setKillingPort(null);
+                                    }
+                                  }}
+                                >
+                                  {killingPort === p.port
+                                    ? <Loader2 className="h-3 w-3 animate-spin" />
+                                    : <X className="h-3 w-3" />}
+                                </Button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Preview tab */}
+                {previewTab === "preview" && (
+                  <div className="flex-1 min-h-0 relative bg-white">
+                    {previewUrl ? (
+                      <iframe
+                        src={`${API_BASE_URL}${previewUrl}`}
+                        className="w-full h-full border-none"
+                        title="App Preview"
+                        sandbox="allow-scripts allow-forms allow-popups allow-same-origin"
+                      />
+                    ) : (
+                      <div className="flex items-center justify-center h-full text-muted-foreground text-sm">
+                        Select a port from the Ports tab to preview.
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Logs tab */}
+                {previewTab === "logs" && (
+                  <div className="flex-1 min-h-0 flex flex-col bg-zinc-950">
+                    <div className="flex-1 min-h-0 overflow-auto p-4 text-green-400 font-mono text-xs">
+                      {logsLoading ? (
+                        <div className="flex items-center gap-2 text-zinc-400">
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                          Loading logs...
+                        </div>
+                      ) : processLogs ? (
+                        <pre className="whitespace-pre-wrap break-all">{processLogs}</pre>
+                      ) : (
+                        <p className="text-zinc-500">No logs available. Start a process first.</p>
+                      )}
+                    </div>
+                    {/* Command Prompt */}
+                    <div className="flex-shrink-0 border-t border-zinc-800 p-3 flex gap-2">
+                      <Input
+                        value={logsCommandInput}
+                        onChange={(e) => setLogsCommandInput(e.target.value)}
+                        placeholder="Enter command to run in container (e.g. ls -la, pip install package)"
+                        className="flex-1 bg-zinc-900 border-zinc-700 text-green-400 font-mono text-xs focus-visible:ring-zinc-700 h-9"
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" && !e.shiftKey) {
+                            e.preventDefault();
+                            handleRunLogsCommand();
+                          }
+                        }}
+                        disabled={logsCommandRunning}
+                      />
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={handleRunLogsCommand}
+                        disabled={logsCommandRunning || !logsCommandInput.trim()}
+                        className="h-9 px-4 bg-zinc-800 hover:bg-zinc-700 text-zinc-300"
+                      >
+                        {logsCommandRunning ? <Loader2 className="h-3 w-3 animate-spin" /> : "Run"}
+                      </Button>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>
